@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
 from .config import settings
@@ -66,6 +66,9 @@ def init_db() -> None:
                 missed_syncs     INTEGER DEFAULT 0,
                 sold_notified    INTEGER DEFAULT 0,
                 notification_eligible INTEGER DEFAULT 0,
+                sold_at          TEXT,
+                carried_from_uuid TEXT,
+                carry_suggestion_ignored INTEGER DEFAULT 0,
                 first_seen       TEXT,
                 last_seen        TEXT,
                 updated_at       TEXT
@@ -85,6 +88,7 @@ def init_db() -> None:
                 trend_json             TEXT,
                 rejected_json          TEXT,
                 volume_per_day         REAL,
+                sell_estimate_json     TEXT,
                 created_at             TEXT
             );
 
@@ -97,8 +101,22 @@ def init_db() -> None:
                 sent_at           TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS relist_links (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                old_auction_uuid  TEXT,
+                new_auction_uuid  TEXT,
+                confidence        INTEGER,
+                reason            TEXT,
+                accepted          INTEGER DEFAULT 0,
+                ignored           INTEGER DEFAULT 0,
+                created_at        TEXT,
+                accepted_at       TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_analysis_uuid ON auction_analysis(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_notif_uuid ON notifications(auction_uuid);
+            CREATE INDEX IF NOT EXISTS idx_relink_new ON relist_links(new_auction_uuid);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_relink_pair ON relist_links(old_auction_uuid, new_auction_uuid);
             """
         )
 
@@ -129,67 +147,34 @@ def _migrate() -> None:
             conn.execute("UPDATE tracked_auctions SET sold_notified=1 WHERE sold=1")
         if "notification_eligible" not in cols:
             conn.execute("ALTER TABLE tracked_auctions ADD COLUMN notification_eligible INTEGER DEFAULT 0")
+        if "sold_at" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN sold_at TEXT")
+            # Best-effort back-fill for already-sold rows so the Sold tab can sort.
+            conn.execute(
+                "UPDATE tracked_auctions SET sold_at = COALESCE(ends_at, updated_at) WHERE sold = 1 AND sold_at IS NULL"
+            )
+        if "carried_from_uuid" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN carried_from_uuid TEXT")
+        if "carry_suggestion_ignored" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN carry_suggestion_ignored INTEGER DEFAULT 0")
+        # relist_links is created by init_db's CREATE TABLE IF NOT EXISTS.
         acols = {row["name"] for row in conn.execute("PRAGMA table_info(auction_analysis)")}
         if "rejected_json" not in acols:
             conn.execute("ALTER TABLE auction_analysis ADD COLUMN rejected_json TEXT")
+        if "sell_estimate_json" not in acols:
+            conn.execute("ALTER TABLE auction_analysis ADD COLUMN sell_estimate_json TEXT")
 
 
 # --------------------------------------------------------------------------
 # tracked_auctions
 # --------------------------------------------------------------------------
 
-def upsert_auction(data: Dict[str, Any]) -> None:
-    """Insert or update an auction from a sync. Preserves user-entered fields."""
-    now = utcnow()
-    with get_conn() as conn:
-        existing = conn.execute(
-            "SELECT auction_uuid, first_seen FROM tracked_auctions WHERE auction_uuid = ?",
-            (data["auction_uuid"],),
-        ).fetchone()
-
-        if existing:
-            conn.execute(
-                """
-                UPDATE tracked_auctions
-                   SET item_tag = ?, item_name = ?, skycofl_url = ?, listing_price = ?,
-                       active = ?, ends_at = COALESCE(?, ends_at), last_seen = ?, updated_at = ?
-                 WHERE auction_uuid = ?
-                """,
-                (
-                    data.get("item_tag"),
-                    data.get("item_name"),
-                    data.get("skycofl_url"),
-                    data.get("listing_price"),
-                    int(data.get("active", 1)),
-                    data.get("ends_at"),
-                    now,
-                    now,
-                    data["auction_uuid"],
-                ),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO tracked_auctions
-                    (auction_uuid, item_tag, item_name, skycofl_url, listing_price,
-                     buy_cost, min_profit, ignored, active, sold, ends_at,
-                     first_seen, last_seen, updated_at)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, 0, ?, ?, ?, ?)
-                """,
-                (
-                    data["auction_uuid"],
-                    data.get("item_tag"),
-                    data.get("item_name"),
-                    data.get("skycofl_url"),
-                    data.get("listing_price"),
-                    settings.relist_min_profit_after_tax,
-                    int(data.get("active", 1)),
-                    data.get("ends_at"),
-                    now,
-                    now,
-                    now,
-                ),
-            )
+# User-owned fields are NEVER written by sync. They are only set through the
+# explicit user routes/setters (set_buy_cost, set_min_profit, set_target_sell_price,
+# set_notes, set_ignored). All market sync writes go through upsert_synced() below,
+# which is the single upsert path and updates market fields only. This is what keeps
+# saved buy costs from being wiped on sync/restart/redeploy.
+USER_OWNED_FIELDS = ("buy_cost", "min_profit", "target_sell_price", "notes", "ignored")
 
 
 def count_tracked() -> int:
@@ -212,11 +197,16 @@ def upsert_synced(
     sync_id: int,
     notification_eligible: int,
     sold_notified: int,
+    sold_at: Optional[str] = None,
 ) -> None:
     """Insert/update an auction observed during a sync.
 
-    Preserves user-entered fields (buy_cost, min_profit, notes, ignored).
+    Updates MARKET fields only. The user-owned fields (buy_cost, min_profit,
+    target_sell_price, notes, ignored) are deliberately absent from the UPDATE
+    below, so a sync can never overwrite a saved buy cost with null/blank or
+    reset a user-changed min_profit. New rows insert buy_cost as NULL.
     notification_eligible / sold_notified are sticky: once 1 they never drop to 0.
+    sold_at is set once (COALESCE) when an auction first becomes SOLD.
     """
     now = utcnow()
     active = 1 if status == "ACTIVE" else 0
@@ -226,6 +216,8 @@ def upsert_synced(
             "SELECT auction_uuid FROM tracked_auctions WHERE auction_uuid = ?", (uuid,)
         ).fetchone()
         if existing:
+            # MARKET FIELDS ONLY. Do NOT add buy_cost / min_profit / target_sell_price
+            # / notes / ignored here - they are user-owned and must survive sync.
             conn.execute(
                 """
                 UPDATE tracked_auctions SET
@@ -235,6 +227,7 @@ def upsert_synced(
                     listing_price = COALESCE(?, listing_price),
                     sold_price = COALESCE(?, sold_price),
                     ends_at = COALESCE(?, ends_at),
+                    sold_at = COALESCE(sold_at, ?),
                     status = ?, active = ?, sold = ?,
                     last_sync_seen = ?, missed_syncs = 0,
                     notification_eligible = CASE WHEN ? = 1 THEN 1 ELSE notification_eligible END,
@@ -244,7 +237,7 @@ def upsert_synced(
                 """,
                 (
                     item_tag, item_name, skycofl_url, listing_price, sold_price, ends_at,
-                    status, active, sold, sync_id,
+                    sold_at, status, active, sold, sync_id,
                     notification_eligible, sold_notified, now, now, uuid,
                 ),
             )
@@ -253,14 +246,14 @@ def upsert_synced(
                 """
                 INSERT INTO tracked_auctions
                     (auction_uuid, item_tag, item_name, skycofl_url, listing_price,
-                     buy_cost, min_profit, ignored, active, sold, sold_price, ends_at,
+                     buy_cost, min_profit, ignored, active, sold, sold_price, ends_at, sold_at,
                      status, last_sync_seen, missed_syncs, notification_eligible, sold_notified,
                      first_seen, last_seen, updated_at)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     uuid, item_tag, item_name, skycofl_url, listing_price,
-                    settings.relist_min_profit_after_tax, active, sold, sold_price, ends_at,
+                    settings.relist_min_profit_after_tax, active, sold, sold_price, ends_at, sold_at,
                     status, sync_id, notification_eligible, sold_notified, now, now, now,
                 ),
             )
@@ -330,6 +323,14 @@ def set_min_profit(uuid: str, min_profit: int) -> None:
         )
 
 
+def set_target_sell_price(uuid: str, target_sell_price: Optional[int]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tracked_auctions SET target_sell_price = ?, updated_at = ? WHERE auction_uuid = ?",
+            (target_sell_price, utcnow(), uuid),
+        )
+
+
 def set_notes(uuid: str, notes: str) -> None:
     with get_conn() as conn:
         conn.execute(
@@ -348,15 +349,17 @@ def set_ignored(uuid: str, ignored: bool) -> None:
 
 def mark_sold(uuid: str, sold_price: Optional[int] = None) -> None:
     """Manually mark an auction sold (also flags it handled so it never re-notifies)."""
+    now = utcnow()
     with get_conn() as conn:
         conn.execute(
             """
             UPDATE tracked_auctions
                SET sold = 1, active = 0, status = 'SOLD', sold_notified = 1,
-                   sold_price = COALESCE(?, sold_price), updated_at = ?
+                   sold_price = COALESCE(?, sold_price),
+                   sold_at = COALESCE(sold_at, ends_at, ?), updated_at = ?
              WHERE auction_uuid = ?
             """,
-            (sold_price, utcnow(), uuid),
+            (sold_price, now, now, uuid),
         )
 
 
@@ -371,8 +374,8 @@ def insert_analysis(row: Dict[str, Any]) -> int:
             INSERT INTO auction_analysis
                 (auction_uuid, decision, suggested_price, expected_profit, confidence,
                  comparable_count, comparable_prices_json, reasons_json, item_features_json,
-                 trend_json, rejected_json, volume_per_day, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trend_json, rejected_json, volume_per_day, sell_estimate_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("auction_uuid"),
@@ -387,6 +390,7 @@ def insert_analysis(row: Dict[str, Any]) -> int:
                 row.get("trend_json"),
                 row.get("rejected_json"),
                 row.get("volume_per_day"),
+                row.get("sell_estimate_json"),
                 utcnow(),
             ),
         )
@@ -473,3 +477,250 @@ def notification_history(uuid: str, limit: int = 20) -> List[sqlite3.Row]:
                 (uuid, limit),
             ).fetchall()
         )
+
+
+# --------------------------------------------------------------------------
+# relist links / carry-buy-cost
+# --------------------------------------------------------------------------
+
+def get_carry_source_candidates(
+    item_tag: str,
+    exclude_uuid: str,
+    since_iso: str,
+    new_first_seen: Optional[str] = None,
+) -> List[sqlite3.Row]:
+    """Recent same-tag auctions with a saved buy cost that may be the previous listing."""
+    with get_conn() as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT * FROM tracked_auctions
+                 WHERE item_tag = ? AND auction_uuid != ?
+                   AND buy_cost IS NOT NULL
+                   AND COALESCE(ignored, 0) = 0
+                   AND COALESCE(sold_at, ends_at, last_seen, updated_at) >= ?
+                   AND (
+                        status IN ('SOLD', 'EXPIRED', 'STALE')
+                        OR (status = 'ACTIVE' AND COALESCE(missed_syncs, 0) >= 1)
+                        OR (status = 'ACTIVE' AND ? IS NOT NULL AND last_seen IS NOT NULL AND last_seen < ?)
+                   )
+                 ORDER BY COALESCE(sold_at, ends_at, updated_at, last_seen) DESC
+                """,
+                (item_tag, exclude_uuid, since_iso, new_first_seen, new_first_seen),
+            ).fetchall()
+        )
+
+
+def get_carry_candidates(new_auction_uuid: str, lookback_days: int) -> List[sqlite3.Row]:
+    """Recent carry-source candidates for a new auction, before feature scoring."""
+    row = get_auction(new_auction_uuid)
+    if row is None or not row["item_tag"]:
+        return []
+    since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    return get_carry_source_candidates(
+        row["item_tag"], new_auction_uuid, since, row["first_seen"]
+    )
+
+
+def upsert_relist_suggestion(old_uuid: str, new_uuid: str, confidence: int, reason: str) -> bool:
+    """Create/update a pending carry suggestion.
+
+    Ignored or accepted links stay retired so dismissed suggestions do not reappear.
+    Returns True when a new pending link was inserted.
+    """
+    with get_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT accepted, ignored
+              FROM relist_links
+             WHERE old_auction_uuid = ? AND new_auction_uuid = ?
+            """,
+            (old_uuid, new_uuid),
+        ).fetchone()
+        if existing is not None:
+            if existing["accepted"] or existing["ignored"]:
+                return False
+            conn.execute(
+                """
+                UPDATE relist_links
+                   SET confidence = ?, reason = ?
+                 WHERE old_auction_uuid = ? AND new_auction_uuid = ?
+                """,
+                (int(confidence), reason, old_uuid, new_uuid),
+            )
+            return False
+
+        conn.execute(
+            """
+            INSERT INTO relist_links
+                (old_auction_uuid, new_auction_uuid, confidence, reason, accepted, ignored, created_at)
+            VALUES (?, ?, ?, ?, 0, 0, ?)
+            """,
+            (old_uuid, new_uuid, int(confidence), reason, utcnow()),
+        )
+        return True
+
+
+def insert_relist_link(old_uuid: str, new_uuid: str, confidence: int, reason: str) -> bool:
+    """Backward-compatible wrapper for creating/updating a pending suggestion."""
+    return upsert_relist_suggestion(old_uuid, new_uuid, confidence, reason)
+
+
+_PENDING_LINK_SELECT = """
+    SELECT rl.id, rl.old_auction_uuid, rl.new_auction_uuid, rl.confidence, rl.reason,
+           rl.created_at,
+           t.item_name AS old_item_name, t.buy_cost AS old_buy_cost,
+           t.min_profit AS old_min_profit, t.target_sell_price AS old_target_sell_price,
+           t.notes AS old_notes,
+           t.status AS old_status, t.missed_syncs AS old_missed_syncs,
+           t.sold_at AS old_sold_at, t.ends_at AS old_ends_at,
+           t.last_seen AS old_last_seen, t.updated_at AS old_updated_at
+      FROM relist_links rl
+      JOIN tracked_auctions t ON t.auction_uuid = rl.old_auction_uuid
+      JOIN tracked_auctions n ON n.auction_uuid = rl.new_auction_uuid
+     WHERE rl.accepted = 0 AND rl.ignored = 0
+       AND t.buy_cost IS NOT NULL
+       AND COALESCE(t.ignored, 0) = 0
+       AND n.buy_cost IS NULL
+       AND n.carry_suggestion_ignored = 0
+       AND COALESCE(n.status, 'ACTIVE') = 'ACTIVE'
+"""
+
+
+def get_pending_carry_links(new_uuid: str) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return list(
+            conn.execute(
+                _PENDING_LINK_SELECT + " AND rl.new_auction_uuid = ? ORDER BY rl.confidence DESC",
+                (new_uuid,),
+            ).fetchall()
+        )
+
+
+def get_carry_suggestions(new_auction_uuid: str) -> List[sqlite3.Row]:
+    """Pending stored carry suggestions for a new auction."""
+    return get_pending_carry_links(new_auction_uuid)
+
+
+def pending_carry_links_map() -> Dict[str, List[sqlite3.Row]]:
+    """All pending carry suggestions grouped by new auction uuid (for the dashboard)."""
+    out: Dict[str, List[sqlite3.Row]] = {}
+    with get_conn() as conn:
+        rows = conn.execute(_PENDING_LINK_SELECT + " ORDER BY rl.confidence DESC").fetchall()
+    for r in rows:
+        out.setdefault(r["new_auction_uuid"], []).append(r)
+    return out
+
+
+def carry_user_fields(new_uuid: str, old_uuid: str) -> bool:
+    """Copy user-owned fields from an old auction onto the new one.
+
+    Carries: buy_cost, min_profit, target_sell_price, notes. Never carries
+    ignored or sold. Returns False if the old auction has no buy cost.
+    """
+    with get_conn() as conn:
+        old = conn.execute(
+            "SELECT buy_cost, min_profit, target_sell_price, notes FROM tracked_auctions WHERE auction_uuid = ?",
+            (old_uuid,),
+        ).fetchone()
+        if old is None or old["buy_cost"] is None:
+            return False
+        cur = conn.execute(
+            """
+            UPDATE tracked_auctions SET
+                buy_cost = ?,
+                min_profit = COALESCE(?, min_profit),
+                target_sell_price = ?,
+                notes = COALESCE(?, notes),
+                carried_from_uuid = ?,
+                carry_suggestion_ignored = 0,
+                updated_at = ?
+             WHERE auction_uuid = ? AND buy_cost IS NULL
+            """,
+            (
+                old["buy_cost"], old["min_profit"], old["target_sell_price"],
+                old["notes"], old_uuid, utcnow(), new_uuid,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def copy_user_fields_to_relisted_auction(new_uuid: str, old_uuid: str) -> bool:
+    """Copy buy_cost/min_profit/target_sell_price/notes from old -> new."""
+    return carry_user_fields(new_uuid, old_uuid)
+
+
+def accept_relist_link(new_uuid: str, old_uuid: str) -> None:
+    """Mark the chosen link accepted and retire the other pending suggestions."""
+    now = utcnow()
+    with get_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT 1 FROM relist_links
+             WHERE new_auction_uuid = ? AND old_auction_uuid = ?
+            """,
+            (new_uuid, old_uuid),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO relist_links
+                    (old_auction_uuid, new_auction_uuid, confidence, reason, accepted, ignored, created_at)
+                VALUES (?, ?, 0, 'Accepted manual carry.', 0, 0, ?)
+                """,
+                (old_uuid, new_uuid, now),
+            )
+        conn.execute(
+            """
+            UPDATE relist_links
+               SET accepted = 1, ignored = 0, accepted_at = ?
+             WHERE new_auction_uuid = ? AND old_auction_uuid = ?
+            """,
+            (now, new_uuid, old_uuid),
+        )
+        conn.execute(
+            "UPDATE relist_links SET ignored = 1 WHERE new_auction_uuid = ? AND old_auction_uuid != ? AND accepted = 0",
+            (new_uuid, old_uuid),
+        )
+
+
+def accept_carry_suggestion(new_uuid: str, old_uuid: str) -> None:
+    """Accepted carry link helper with the requested public name."""
+    accept_relist_link(new_uuid, old_uuid)
+
+
+def ignore_carry_suggestions(new_uuid: str) -> None:
+    """User dismissed the suggestion(s): never offer them for this auction again."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tracked_auctions SET carry_suggestion_ignored = 1, updated_at = ? WHERE auction_uuid = ?",
+            (utcnow(), new_uuid),
+        )
+        conn.execute(
+            "UPDATE relist_links SET ignored = 1 WHERE new_auction_uuid = ? AND accepted = 0",
+            (new_uuid,),
+        )
+
+
+def has_any_relist_link(new_uuid: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM relist_links WHERE new_auction_uuid = ? LIMIT 1", (new_uuid,)
+        ).fetchone()
+        return row is not None
+
+
+def get_accepted_carry_link(new_uuid: str) -> Optional[sqlite3.Row]:
+    """Accepted carry link details for the auction detail page."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT rl.*, t.item_name AS old_item_name, t.buy_cost AS old_buy_cost
+              FROM relist_links rl
+              LEFT JOIN tracked_auctions t ON t.auction_uuid = rl.old_auction_uuid
+             WHERE rl.new_auction_uuid = ? AND rl.accepted = 1
+             ORDER BY rl.accepted_at DESC, rl.id DESC
+             LIMIT 1
+            """,
+            (new_uuid,),
+        ).fetchone()

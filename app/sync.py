@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from . import cofl_client, db, notifications
+from . import carry, cofl_client, db, notifications
 from .config import settings
 
 log = logging.getLogger("sync")
@@ -141,7 +141,16 @@ def _detail_says_sold(detail: Optional[Dict[str, Any]]) -> bool:
 
 async def sync_player_auctions() -> Dict[str, int]:
     """Sync the configured player's auctions. Returns a stats dict."""
-    stats = {"seen": 0, "active": 0, "sold": 0, "expired": 0, "stale": 0, "notified": 0, "errors": 0}
+    stats = {
+        "seen": 0,
+        "active": 0,
+        "sold": 0,
+        "expired": 0,
+        "stale": 0,
+        "notified": 0,
+        "carry_suggestions": 0,
+        "errors": 0,
+    }
 
     if not settings.mc_uuid:
         log.warning("MC_UUID not configured; skipping sync.")
@@ -159,6 +168,7 @@ async def sync_player_auctions() -> Dict[str, int]:
         return stats
 
     seen_uuids = set()
+    active_uuids = []
 
     for item in items:
         try:
@@ -181,6 +191,7 @@ async def sync_player_auctions() -> Dict[str, int]:
                     notification_eligible=1, sold_notified=0,
                 )
                 stats["active"] += 1
+                active_uuids.append(f["uuid"])
 
             elif status == "SOLD":
                 # Notify ONLY for an observed ACTIVE -> SOLD transition.
@@ -199,11 +210,13 @@ async def sync_player_auctions() -> Dict[str, int]:
                 )
 
                 # Record as SOLD and flag handled so it can never re-notify.
+                # sold_at = auction end time if known, else now (UTC).
+                sold_at = ends_iso or datetime.now(timezone.utc).isoformat()
                 db.upsert_synced(
                     uuid=f["uuid"], item_tag=f["tag"], item_name=f["name"], skycofl_url=url,
                     status="SOLD", listing_price=f["starting"] or None, sold_price=f["highest"],
                     ends_at=ends_iso, sync_id=sync_id,
-                    notification_eligible=0, sold_notified=1,
+                    notification_eligible=0, sold_notified=1, sold_at=sold_at,
                 )
                 stats["sold"] += 1
 
@@ -229,6 +242,13 @@ async def sync_player_auctions() -> Dict[str, int]:
 
     # Age out ACTIVE auctions that vanished from the listing.
     stats["stale"] = db.stale_pass(seen_uuids, threshold=settings.stale_after_missed_syncs)
+
+    if active_uuids and settings.relist_carry_enabled:
+        try:
+            stats["carry_suggestions"] = await carry.run_for_new_auctions(active_uuids)
+        except Exception as exc:  # noqa: BLE001 - carry must not block sync
+            log.warning("Carry suggestion pass failed: %s", exc)
+            stats["errors"] += 1
 
     log.info("Sync %s complete: %s", sync_id, stats)
     return stats

@@ -22,6 +22,15 @@ DECISION_LABELS = {
 }
 
 
+def _row_get(row, key, default=None):
+    """Safe column access for sqlite3.Row (no .get, raises on missing column)."""
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return default
+    return default if value is None else value
+
+
 def _row_status(row) -> str:
     """Status with a safe fallback for rows predating the status column."""
     try:
@@ -113,6 +122,7 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
 
     trend = {}
     reasons: List[str] = []
+    sell_estimate: Dict[str, Any] = {}
     volume_per_day = None
     if analysis_row:
         try:
@@ -123,6 +133,10 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
             reasons = json.loads(analysis_row["reasons_json"] or "[]")
         except (ValueError, TypeError):
             reasons = []
+        try:
+            sell_estimate = json.loads(_row_get(analysis_row, "sell_estimate_json") or "{}")
+        except (ValueError, TypeError):
+            sell_estimate = {}
         volume_per_day = analysis_row["volume_per_day"]
 
     expected_profit = analysis_row["expected_profit"] if analysis_row else None
@@ -159,7 +173,21 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
         "sold": status == "SOLD",
         "active": status == "ACTIVE",
         "missing_buy_cost": row["buy_cost"] is None and status == "ACTIVE",
+        "carried_from_uuid": _row_get(row, "carried_from_uuid"),
+        "carry_suggestions": [],
         "sold_price_fmt": format_coins(row["sold_price"]) if row["sold_price"] else "—",
+        # Sale-time prediction (cautious; may be "Unknown").
+        "sell_current": sell_estimate.get("estimated_sell_time_current", "Unknown"),
+        "sell_suggested": sell_estimate.get("estimated_sell_time_suggested", "Unknown"),
+        "sell_like_current": sell_estimate.get("sale_likelihood_current", "unknown"),
+        "sell_like_suggested": sell_estimate.get("sale_likelihood_suggested", "unknown"),
+        "sell_reason": sell_estimate.get("sell_time_reason", ""),
+        "has_sell_estimate": bool(sell_estimate) and sell_estimate.get("estimated_sell_time_current") not in (None, "Unknown"),
+        # Raw timestamps for sorting the Sold tab.
+        "sold_at": _row_get(row, "sold_at"),
+        "ended_at": _row_get(row, "ends_at"),
+        "updated_at": _row_get(row, "updated_at"),
+        "last_seen": _row_get(row, "last_seen"),
     }
 
 
@@ -212,6 +240,24 @@ def sort_cards(cards: List[Dict[str, Any]], sort: str) -> List[Dict[str, Any]]:
         return sorted(cards, key=lambda c: (not c["missing_buy_cost"], -(c["listing_price"] or 0)))
     # default: recently updated (rows already come ordered by updated_at desc)
     return cards
+
+
+def _sold_sort_key(card: Dict[str, Any]) -> str:
+    """Best available timestamp for ordering sold items, newest first.
+
+    Priority: sold_at -> ended_at -> updated_at -> last_seen. ISO strings sort
+    chronologically, so a plain string comparison works.
+    """
+    for key in ("sold_at", "ended_at", "updated_at", "last_seen"):
+        val = card.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
+def sort_sold(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Newest sold first (Fix 4)."""
+    return sorted(cards, key=_sold_sort_key, reverse=True)
 
 
 def filter_cards(cards: List[Dict[str, Any]], flt: str) -> List[Dict[str, Any]]:

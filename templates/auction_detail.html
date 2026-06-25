@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}{{ card.item_name }} · SkyCofl Relist{% endblock %}
+{% block body %}
+<div class="wrap">
+    <a class="back-link" href="/">← Back to dashboard</a>
+
+    <div class="topbar">
+        <div class="brand">
+            <span class="logo">📦</span>
+            <div>
+                {{ card.item_name }}
+                <small>{{ card.item_tag }}</small>
+            </div>
+        </div>
+        <span class="badge {{ card.decision }}">{{ card.decision_label }}</span>
+    </div>
+
+    <div class="detail-grid">
+
+        <!-- Recommendation -->
+        <div class="panel">
+            <h3>Recommendation</h3>
+            <div class="kv"><span class="k">Decision</span><span class="v"><span class="badge {{ card.decision }}">{{ card.decision_label }}</span></span></div>
+            <div class="kv"><span class="k">Listed at</span><span class="v">{{ card.listing_price_fmt }}</span></div>
+            <div class="kv"><span class="k">Suggested relist</span><span class="v">{{ card.suggested_price_fmt }}</span></div>
+            <div class="kv"><span class="k">Buy cost</span><span class="v">{{ card.buy_cost | coins if card.buy_cost is not none else '—' }}</span></div>
+            {% if card.carried_from_uuid %}
+            <div class="kv"><span class="k">Carried from</span><span class="v">{{ card.carried_from_uuid }}</span></div>
+            {% if carry_link %}
+            <div class="kv"><span class="k">Carry confidence</span><span class="v">{{ carry_link['confidence'] }}%{% if carry_link['reason'] %} · {{ carry_link['reason'] }}{% endif %}</span></div>
+            {% endif %}
+            {% endif %}
+            <div class="kv"><span class="k">Min profit</span><span class="v">{{ card.min_profit | coins }}</span></div>
+            <div class="kv"><span class="k">Expected profit (after tax)</span><span class="v">{{ card.expected_profit_fmt }}</span></div>
+            <div class="kv"><span class="k">Confidence</span><span class="v">{{ card.confidence }}{% if card.confidence != '—' %}%{% endif %}</span></div>
+            <div class="kv"><span class="k">Comparables used</span><span class="v">{{ card.comparable_count }}</span></div>
+            <div class="kv"><span class="k">Trend</span><span class="v">{{ card.trend_summary }}</span></div>
+            <div class="kv"><span class="k">Volume</span><span class="v">{{ card.volume_summary }}</span></div>
+            <div class="kv"><span class="k">Sell est. (current)</span><span class="v">{{ card.sell_current }}{% if card.sell_like_current and card.sell_like_current != 'unknown' %} · {{ card.sell_like_current }}{% endif %}</span></div>
+            <div class="kv"><span class="k">Sell est. (suggested)</span><span class="v">{{ card.sell_suggested }}{% if card.sell_like_suggested and card.sell_like_suggested != 'unknown' %} · {{ card.sell_like_suggested }}{% endif %}</span></div>
+            <div class="kv"><span class="k">Time left</span><span class="v">{{ card.time_left }}</span></div>
+            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap">
+                <button class="btn small primary" onclick="analyse('{{ card.uuid }}', this, true)">⚡ Analyse now</button>
+                <a class="btn small ghost" href="{{ card.skycofl_url }}" target="_blank" rel="noopener">Open SkyCofl ↗</a>
+            </div>
+        </div>
+
+        <!-- Reasons -->
+        <div class="panel">
+            <h3>Why this decision</h3>
+            {% if card.reasons %}
+            <ul style="margin:0; padding-left:18px; color:var(--text-dim); font-size:13px; line-height:1.9">
+                {% for r in card.reasons %}<li>{{ r }}</li>{% endfor %}
+            </ul>
+            {% else %}
+            <p style="color:var(--text-faint)">No analysis yet. Click <b>Analyse now</b>.</p>
+            {% endif %}
+
+            {% if card.sell_reason %}
+            <h3 style="margin-top:18px">Sell-time reasoning</h3>
+            <p style="color:var(--text-dim); font-size:13px;">{{ card.sell_reason }}</p>
+            {% endif %}
+
+            <h3 style="margin-top:18px">Notes</h3>
+            <div class="input-row">
+                <input class="coin-input" id="notes-{{ card.uuid }}" type="text" value="{{ row['notes'] or '' }}" placeholder="Private note…">
+                <button class="btn small" onclick="saveNotes('{{ card.uuid }}', this)">Save</button>
+            </div>
+            {% if row['notes'] %}<div class="note-text">{{ row['notes'] }}</div>{% endif %}
+        </div>
+
+        <!-- Feature extraction -->
+        <div class="panel">
+            <h3>Extracted item features</h3>
+            {% if features %}
+            <div class="kv"><span class="k">Rarity</span><span class="v">{{ features.rarity or '—' }}</span></div>
+            <div class="kv"><span class="k">Reforge</span><span class="v">{{ features.reforge or '—' }}</span></div>
+            <div class="kv"><span class="k">Stars</span><span class="v">{{ features.stars or 0 }}★</span></div>
+            <div class="kv"><span class="k">Recombobulated</span><span class="v">{{ 'Yes' if features.recombobulated else 'No' }}</span></div>
+            {% if features.pet %}
+            <div class="kv"><span class="k">Pet type</span><span class="v">{{ features.pet.type or '—' }}</span></div>
+            <div class="kv"><span class="k">Pet tier</span><span class="v">{{ features.pet.tier or '—' }}</span></div>
+            <div class="kv"><span class="k">Pet level</span><span class="v">{{ features.pet.level or '—' }}</span></div>
+            <div class="kv"><span class="k">Held item</span><span class="v">{{ features.pet.held_item or '—' }}</span></div>
+            <div class="kv"><span class="k">Pet skin</span><span class="v">{{ features.pet.skin or '—' }}</span></div>
+            {% endif %}
+            {% if features.hot_potato and features.hot_potato.total %}
+            <div class="kv"><span class="k">Potato books</span><span class="v">{{ features.hot_potato.hpb }} HPB / {{ features.hot_potato.fuming }} fuming</span></div>
+            {% endif %}
+            {% if features.gemstones and features.gemstones.has_gems %}
+            <div class="kv"><span class="k">Gemstones</span><span class="v">{{ features.gemstones.qualities | join(', ') if features.gemstones.qualities else features.gemstones.gem_count }}</span></div>
+            {% endif %}
+            {% if features.attributes %}
+            <div class="kv"><span class="k">Attributes</span><span class="v">{% for k,v in features.attributes.items() %}{{ k }} {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</span></div>
+            {% endif %}
+            {% if features.important_enchants %}
+            <div class="kv"><span class="k">Key enchants</span><span class="v" style="max-width:60%">
+                <span class="pill-list" style="justify-content:flex-end">
+                {% for k,v in features.important_enchants.items() %}<span class="pill">{{ k }} {{ v }}</span>{% endfor %}
+                </span>
+            </span></div>
+            {% endif %}
+            {% else %}
+            <p style="color:var(--text-faint)">Run analysis to extract features.</p>
+            {% endif %}
+        </div>
+
+        <!-- Comparables used -->
+        <div class="panel">
+            <h3>Comparable listings used ({{ comparables|length }})</h3>
+            {% if comparables %}
+            <table class="tbl">
+                <thead><tr><th>Price</th><th>Score</th><th>Match reasons</th></tr></thead>
+                <tbody>
+                {% for c in comparables %}
+                <tr>
+                    <td class="ok">{{ c.price | coins }}</td>
+                    <td>{{ c.score }}</td>
+                    <td>{{ c.reasons | join('; ') }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p style="color:var(--text-faint)">No comparable listings passed the quality threshold.</p>
+            {% endif %}
+        </div>
+
+        <!-- Rejected -->
+        <div class="panel">
+            <h3>Rejected candidates &amp; why</h3>
+            {% if rejected %}
+            <table class="tbl">
+                <thead><tr><th>Item</th><th>Price</th><th>Score</th><th>Rejected because</th></tr></thead>
+                <tbody>
+                {% for r in rejected %}
+                <tr>
+                    <td>{{ r.item_name or '—' }}</td>
+                    <td class="bad">{{ r.price | coins }}</td>
+                    <td>{{ r.score }}</td>
+                    <td>{{ r.rejections | join('; ') }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <p style="color:var(--text-faint); font-size:12px; margin-top:8px">These are why we do NOT just undercut raw LBIN.</p>
+            {% else %}
+            <p style="color:var(--text-faint)">No rejected candidates recorded.</p>
+            {% endif %}
+        </div>
+
+        <!-- History -->
+        <div class="panel">
+            <h3>Past analyses</h3>
+            {% if history %}
+            <table class="tbl">
+                <thead><tr><th>When</th><th>Decision</th><th>Suggested</th><th>Conf.</th><th>Comp.</th></tr></thead>
+                <tbody>
+                {% for h in history %}
+                <tr>
+                    <td>{{ h['created_at'][:16].replace('T',' ') }}</td>
+                    <td>{{ h['decision'] }}</td>
+                    <td>{{ h['suggested_price'] | coins if h['suggested_price'] else '—' }}</td>
+                    <td>{{ h['confidence'] }}%</td>
+                    <td>{{ h['comparable_count'] }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p style="color:var(--text-faint)">No analysis history yet.</p>
+            {% endif %}
+        </div>
+
+        <!-- Notifications -->
+        <div class="panel">
+            <h3>Notification history</h3>
+            {% if notifications %}
+            <table class="tbl">
+                <thead><tr><th>When</th><th>Type</th><th>Decision</th></tr></thead>
+                <tbody>
+                {% for n in notifications %}
+                <tr>
+                    <td>{{ n['sent_at'][:16].replace('T',' ') }}</td>
+                    <td>{{ n['notification_type'] }}</td>
+                    <td>{{ n['decision'] or '—' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p style="color:var(--text-faint)">No notifications sent for this item.</p>
+            {% endif %}
+        </div>
+
+    </div>
+</div>
+{% endblock %}

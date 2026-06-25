@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Settings · SkyCofl Relist{% endblock %}
+{% block body %}
+<div class="wrap">
+    <a class="back-link" href="/">← Back to dashboard</a>
+    <div class="topbar">
+        <div class="brand"><span class="logo">⚙</span><div>Settings<small>Read-only · configured via environment variables</small></div></div>
+        {% if settings.login_required %}<a class="btn ghost" href="/logout">Logout</a>{% endif %}
+    </div>
+
+    <div class="detail-grid">
+        <div class="panel">
+            <h3>Connection</h3>
+            <div class="kv"><span class="k">Player UUID</span><span class="v">{{ '✅ ' + info.mc_uuid_masked if info.mc_uuid_set else '❌ not set' }}</span></div>
+            <div class="kv"><span class="k">CoflNet base URL</span><span class="v">{{ info.cofl_base_url }}</span></div>
+            <div class="kv"><span class="k">Check interval</span><span class="v">{{ info.check_interval_seconds }}s</span></div>
+            <div class="kv"><span class="k">Login required</span><span class="v">{{ '✅ yes' if info.login_required else '⚠ open (no password)' }}</span></div>
+            <div class="kv"><span class="k">Last background run</span><span class="v">{{ info.last_run[:19].replace('T',' ') if info.last_run else 'never' }}</span></div>
+        </div>
+
+        <div class="panel">
+            <h3>Notifications</h3>
+            <div class="kv"><span class="k">Discord webhook</span><span class="v">{{ '✅ configured' if info.discord_configured else '— not set' }}</span></div>
+            <div class="kv"><span class="k">Pushover</span><span class="v">{{ '✅ configured' if info.pushover_configured else '— not set' }}</span></div>
+            <div class="kv"><span class="k">Sold alerts</span><span class="v">{{ '✅ on' if info.sold_alerts else 'off' }}</span></div>
+            <div class="kv"><span class="k">Relist alerts</span><span class="v">{{ '✅ on' if info.relist_alerts else 'off' }}</span></div>
+            <div class="kv"><span class="k">Alert decisions</span><span class="v">{{ info.alert_decisions }}</span></div>
+            <div class="kv"><span class="k">Alert cooldown</span><span class="v">{{ info.alert_cooldown_minutes }} min</span></div>
+            <p style="color:var(--text-faint); font-size:12px; margin-top:10px">Secrets are never displayed here or sent to the browser.</p>
+        </div>
+
+        <div class="panel">
+            <h3>Comparable engine</h3>
+            <div class="kv"><span class="k">Comparable-only pricing</span><span class="v">{{ '✅ on' if info.comparable_only else 'off' }}</span></div>
+            <div class="kv"><span class="k">Pages scanned</span><span class="v">{{ info.comparable_pages }}</span></div>
+            <div class="kv"><span class="k">Min comparable matches</span><span class="v">{{ info.min_comparable_matches }}</span></div>
+            <div class="kv"><span class="k">Min comparable score</span><span class="v">{{ info.min_comparable_score }}</span></div>
+            <div class="kv"><span class="k">Pet level tolerance</span><span class="v">±{{ info.pet_level_tolerance }}</span></div>
+            <div class="kv"><span class="k">Star tolerance</span><span class="v">±{{ info.star_tolerance }}</span></div>
+        </div>
+
+        <div class="panel">
+            <h3>Economics</h3>
+            <div class="kv"><span class="k">AH tax rate</span><span class="v">{{ (info.ah_tax_rate * 100) }}%</span></div>
+            <div class="kv"><span class="k">Default min profit</span><span class="v">{{ info.min_profit_after_tax | coins }}</span></div>
+            {% if info.last_stats %}
+            <h3 style="margin-top:16px">Last cycle</h3>
+            <div class="kv"><span class="k">Analysed</span><span class="v">{{ info.last_stats.get('analysed', 0) }}</span></div>
+            <div class="kv"><span class="k">Alerts sent</span><span class="v">{{ info.last_stats.get('alerts', 0) }}</span></div>
+            <div class="kv"><span class="k">Sold detected</span><span class="v">{{ info.last_stats.get('synced', {}).get('sold', 0) }}</span></div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="safety">
+        To change any setting, edit your <code>.env</code> file (or Railway variables) and restart the app.
+    </div>
+</div>
+{% endblock %}

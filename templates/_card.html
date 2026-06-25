@@ -1,0 +1,133 @@
+<div class="card {% if c.ignored %}ignored{% endif %}" id="card-{{ c.uuid }}" data-uuid="{{ c.uuid }}">
+    <div class="accent-edge edge-{{ c.decision }}"></div>
+
+    <div class="card-head">
+        <div>
+            <div class="card-title"><a href="/auction/{{ c.uuid }}" style="color:inherit">{{ c.item_name }}</a></div>
+            <span class="card-tag">{{ c.item_tag or '—' }}</span>
+        </div>
+        <span class="badge {{ c.decision }}">{{ c.decision_label }}</span>
+    </div>
+
+    {% if c.missing_buy_cost %}
+    <div class="missing-note">
+        <span>⚠ Enter buy cost to enable profit/relist analysis.</span>
+        <button class="link-btn" onclick="findPreviousBuyCost('{{ c.uuid }}', this)">Find previous buy cost</button>
+    </div>
+    {% endif %}
+
+    {% if c.carry_suggestions %}
+    <div class="carry-box" id="carry-box-{{ c.uuid }}">
+        {% if c.carry_suggestions|length > 1 %}
+        <div class="carry-head">Multiple possible relist matches found.</div>
+        <div class="carry-sub">Choose one to carry saved user fields.</div>
+        {% else %}
+        <div class="carry-head">Possible relist detected</div>
+        {% endif %}
+
+        <div class="carry-list">
+            {% for s in c.carry_suggestions %}
+            <div class="carry-item">
+                <div class="carry-main">
+                    <div class="carry-title">{{ s.item_name or c.item_name }}{% if s.age %} from {{ s.age }}{% endif %}</div>
+                    <div class="carry-meta">
+                        Buy cost: <b>{{ s.buy_cost_fmt }}</b>
+                        · Status: <b>{{ s.old_status or 'previous' }}</b>
+                        · Confidence: <b>{{ s.confidence }}%</b>
+                    </div>
+                    <div class="carry-reason">{{ s.reason }}</div>
+                </div>
+                <button class="btn small {% if s.manual %}ghost{% else %}primary{% endif %}" onclick="carryCost('{{ c.uuid }}', '{{ s.old_auction_uuid }}', this)">
+                    {% if s.manual %}Carry anyway{% else %}Carry{% endif %}
+                </button>
+            </div>
+            {% endfor %}
+        </div>
+        <button class="btn small ghost" onclick="ignoreCarry('{{ c.uuid }}', this)">Ignore{% if c.carry_suggestions|length > 1 %} all{% endif %}</button>
+    </div>
+    {% endif %}
+
+    <div class="price-row">
+        <div class="price-block">
+            <div class="k">Listed at</div>
+            <div class="v">{{ c.listing_price_fmt }}</div>
+        </div>
+        <div class="price-block">
+            <div class="k">Suggested relist</div>
+            <div class="v suggest">{{ c.suggested_price_fmt }}</div>
+        </div>
+        <div class="price-block">
+            <div class="k">Profit (after tax)</div>
+            <div class="v {% if c.expected_profit is not none and c.expected_profit >= 0 %}pos{% elif c.expected_profit is not none %}neg{% endif %}">{{ c.expected_profit_fmt }}</div>
+        </div>
+    </div>
+
+    {% if not c.sold %}
+    <div class="input-group">
+        <label for="buy-{{ c.uuid }}">Buy cost</label>
+        <div class="input-row">
+            <input class="coin-input" id="buy-{{ c.uuid }}" type="text" inputmode="numeric"
+                   value="{{ c.buy_cost_fmt }}" placeholder="e.g. 5,000,000 or 5m"
+                   onkeydown="if(event.key==='Enter')saveBuyCost('{{ c.uuid }}',this)">
+            <button class="btn small primary" onclick="saveBuyCost('{{ c.uuid }}', this)">Save</button>
+        </div>
+    </div>
+
+    <div class="input-group">
+        <label>Min profit ({{ c.min_profit | coins }})</label>
+        <div class="quick-profit" id="profit-{{ c.uuid }}">
+            {% for val, lbl in [(250000,'250k'),(500000,'500k'),(1000000,'1m'),(2000000,'2m'),(5000000,'5m')] %}
+            <button class="qbtn {% if c.min_profit == val %}active{% endif %}" onclick="setMinProfit('{{ c.uuid }}', {{ val }}, this)">{{ lbl }}</button>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if c.sold %}
+    <div class="reason">Sold for {{ c.sold_price_fmt }}.</div>
+    {% endif %}
+
+    <div class="meta-grid">
+        <div class="meta">Confidence: <b>{{ c.confidence }}{% if c.confidence != '—' %}%{% endif %}</b></div>
+        <div class="meta">Comparables: <b>{{ c.comparable_count }}</b></div>
+        <div class="meta">Trend: <b>{{ c.trend_summary }}</b></div>
+        <div class="meta">Volume: <b>{{ c.volume_summary }}</b></div>
+    </div>
+
+    {% if c.confidence != '—' %}
+    <div class="confidence-bar"><span style="width: {{ c.confidence }}%"></span></div>
+    {% endif %}
+
+    {% if not c.sold and c.status == 'ACTIVE' %}
+    <div class="sell-estimate">
+        <div class="se-title">⏱ Sell estimate</div>
+        <div class="se-row"><span>Current</span><b>{{ c.sell_current }}</b></div>
+        <div class="se-row"><span>Suggested</span><b>{{ c.sell_suggested }}</b></div>
+    </div>
+    {% endif %}
+
+    {% if c.reasons %}
+    <div class="reason-block">
+        <div class="reason-title">Why {{ c.decision_label }}</div>
+        <ul>
+            {% for r in c.reasons[:5] %}<li>{{ r }}</li>{% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <div class="reason">{{ c.reason }}</div>
+    {% endif %}
+
+    <div class="card-actions">
+        {% if not c.sold %}
+        <button class="btn small" onclick="analyse('{{ c.uuid }}', this)">⚡ Analyse</button>
+        <button class="btn small ghost" onclick="toggleIgnore('{{ c.uuid }}', this)">{% if c.ignored %}Unignore{% else %}Ignore{% endif %}</button>
+        <button class="btn small danger" onclick="markSold('{{ c.uuid }}', this)">Mark sold</button>
+        {% endif %}
+        <a class="btn small ghost" href="{{ c.skycofl_url }}" target="_blank" rel="noopener">Open SkyCofl ↗</a>
+    </div>
+
+    <div class="card-foot">
+        <span>⏳ {{ c.time_left }}</span>
+        <span>Checked {{ c.last_checked }}</span>
+    </div>
+</div>

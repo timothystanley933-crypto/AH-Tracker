@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import analysis, auth, db, notifications, scheduler, views
+from . import analysis, auth, carry, db, notifications, scheduler, views
 from .config import settings
 from .formatting import format_coins, format_profit, parse_coins
 
@@ -133,10 +133,25 @@ async def dashboard(request: Request, filter: str = "active", sort: str = "recen
     rows = db.list_auctions(include_inactive=True)
     analyses = db.latest_analyses_map()
     cards = views.build_cards(rows, analyses)
+    carry_suggestions = carry.pending_for_cards()
+    for card in cards:
+        if card["missing_buy_cost"]:
+            card["carry_suggestions"] = carry_suggestions.get(card["uuid"], [])
     summary = views.compute_summary(cards, scheduler.last_run)
 
     visible = views.filter_cards(cards, filter)
-    visible = views.sort_cards(visible, sort)
+    # The Sold tab always shows newest sold first, regardless of the sort dropdown.
+    if filter == "sold":
+        visible = views.sort_sold(visible)
+    else:
+        visible = views.sort_cards(visible, sort)
+
+    for card in visible:
+        if card["missing_buy_cost"] and not card.get("carry_suggestions"):
+            try:
+                card["carry_suggestions"] = await carry.get_suggestions(card["uuid"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("carry suggestion build failed for %s: %s", card["uuid"], exc)
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -182,6 +197,7 @@ async def auction_detail(request: Request, uuid: str):
 
     history = db.analysis_history(uuid, limit=10)
     notifs = db.notification_history(uuid, limit=20)
+    carry_link = db.get_accepted_carry_link(uuid)
 
     return templates.TemplateResponse(
         "auction_detail.html",
@@ -195,6 +211,7 @@ async def auction_detail(request: Request, uuid: str):
             "trend": trend,
             "history": history,
             "notifications": notifs,
+            "carry_link": carry_link,
             "settings": settings,
         },
     )
@@ -313,6 +330,35 @@ async def api_analyse(uuid: str):
     }
 
 
+@app.get("/api/auctions/{uuid}/carry-suggestions")
+async def api_carry_suggestions(uuid: str, include_manual: bool = False):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    suggestions = await carry.get_suggestions(uuid, include_manual=include_manual)
+    return {"auction_uuid": uuid, "suggestions": suggestions}
+
+
+@app.post("/api/auctions/{uuid}/carry/{old_uuid}")
+async def api_carry(uuid: str, old_uuid: str):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    result = await carry.carry(uuid, old_uuid)
+    if not result.get("ok"):
+        return JSONResponse({"error": result.get("error", "carry failed")}, status_code=400)
+    return result
+
+
+@app.post("/api/auctions/{uuid}/carry-ignore")
+async def api_carry_ignore(uuid: str):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    carry.ignore(uuid)
+    return {"ok": True, "ignored": True}
+
+
 @app.post("/api/auctions/sync")
 async def api_sync():
     stats = await scheduler.run_once()
@@ -365,5 +411,6 @@ async def api_get_analysis(uuid: str):
         "reasons": json.loads(analysis_row["reasons_json"] or "[]"),
         "trend": json.loads(analysis_row["trend_json"] or "{}"),
         "volume_per_day": analysis_row["volume_per_day"],
+        "sell_estimate": json.loads((analysis_row["sell_estimate_json"] if "sell_estimate_json" in analysis_row.keys() else None) or "{}"),
         "created_at": analysis_row["created_at"],
     }

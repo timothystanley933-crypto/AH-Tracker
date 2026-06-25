@@ -92,6 +92,33 @@ class Settings:
     )
     relist_undercut_coins: int = field(default_factory=lambda: _get_int("RELIST_UNDERCUT_COINS", 10000))
 
+    # RELIST vs HOLD gap / market thresholds
+    relist_price_gap_percent: float = field(
+        default_factory=lambda: _get_float("RELIST_PRICE_GAP_PERCENT", 5)
+    )
+    relist_price_gap_coins: int = field(
+        default_factory=lambda: _get_int("RELIST_PRICE_GAP_COINS", 250000)
+    )
+    relist_decent_volume_per_day: float = field(
+        default_factory=lambda: _get_float("RELIST_DECENT_VOLUME_PER_DAY", 3)
+    )
+    relist_strong_down_trend_24h: float = field(
+        default_factory=lambda: _get_float("RELIST_STRONG_DOWN_TREND_24H", -3)
+    )
+    relist_strong_up_trend_24h: float = field(
+        default_factory=lambda: _get_float("RELIST_STRONG_UP_TREND_24H", 5)
+    )
+
+    # Carry buy cost to a relisted auction (new UUID, same item)
+    relist_carry_enabled: bool = field(default_factory=lambda: _get_bool("RELIST_CARRY_ENABLED", True))
+    relist_carry_lookback_days: int = field(
+        default_factory=lambda: _get_int("RELIST_CARRY_LOOKBACK_DAYS", 14)
+    )
+    relist_carry_min_score: int = field(default_factory=lambda: _get_int("RELIST_CARRY_MIN_SCORE", 85))
+    relist_carry_auto_apply: bool = field(
+        default_factory=lambda: _get_bool("RELIST_CARRY_AUTO_APPLY", False)
+    )
+
     # Profit thresholds
     relist_min_profit_after_tax: int = field(
         default_factory=lambda: _get_int("RELIST_MIN_PROFIT_AFTER_TAX", 250000)

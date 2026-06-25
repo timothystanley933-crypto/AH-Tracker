@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · SkyCofl Relist{% endblock %}
+{% block body %}
+<div class="wrap">
+
+    <div class="topbar">
+        <div class="brand">
+            <span class="logo">💰</span>
+            <div>
+                SkyCofl Smart Relist
+                <small>Advisory only · all actions stay manual</small>
+            </div>
+        </div>
+        <div class="topbar-actions">
+            <button class="btn" onclick="syncNow(this)">↻ Sync now</button>
+            <a class="btn ghost" href="/settings">⚙ Settings</a>
+            {% if settings.login_required %}<a class="btn ghost" href="/logout">Logout</a>{% endif %}
+        </div>
+    </div>
+
+    <!-- Summary bar -->
+    <div class="summary">
+        <div class="stat"><div class="label">Active</div><div class="value">{{ summary.total_active }}</div></div>
+        <div class="stat"><div class="label">Tracked</div><div class="value">{{ summary.tracked }}</div></div>
+        <div class="stat warn"><div class="label">No buy cost</div><div class="value">{{ summary.missing_buy_cost }}</div></div>
+        <div class="stat good"><div class="label">Potential profit</div><div class="value">{{ summary.potential_profit_fmt }}</div></div>
+        <div class="stat warn"><div class="label">Relist warnings</div><div class="value">{{ summary.relist_warnings }}</div></div>
+        <div class="stat"><div class="label">Incomparable</div><div class="value">{{ summary.incomparable }}</div></div>
+        <div class="stat"><div class="label">Last refresh</div><div class="value" style="font-size:15px">{{ summary.last_refresh }}</div></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+        <div class="chips">
+            {% set filters = [("active","Active"),("missing","Missing buy cost"),("RELIST","Relist"),("HOLD","Hold"),("INCOMPARABLE","Incomparable"),("PROFIT_LOW","Profit low"),("CUT_LOSS","Cut loss"),("sold","Sold"),("expired","Expired"),("stale","Stale"),("ignored","Ignored"),("all","All")] %}
+            {% for key, label in filters %}
+            <a class="chip {% if filter == key %}active{% endif %}" href="/?filter={{ key }}&sort={{ sort }}">{{ label }}</a>
+            {% endfor %}
+        </div>
+        <select class="sort" onchange="window.location='/?filter={{ filter }}&sort='+this.value">
+            {% set sorts = [("recent","Recently updated"),("value","Highest value"),("urgent","Most urgent"),("confidence","Lowest confidence"),("missing","Missing buy cost first")] %}
+            {% for key, label in sorts %}
+            <option value="{{ key }}" {% if sort == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <!-- Cards -->
+    {% if cards %}
+    <div class="grid">
+        {% for c in cards %}
+        {% include "_card.html" %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty">
+        <h3>No auctions to show</h3>
+        <p>Click <b>Sync now</b> to pull your active SkyCofl auctions, or adjust the filter.</p>
+    </div>
+    {% endif %}
+
+    <div class="safety">
+        🔒 This tool only reads public market data and notifies you. It never logs into Hypixel,
+        never automates gameplay, and never buys, lists, or cancels auctions. Every decision is yours.
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Login · SkyCofl Relist{% endblock %}
+{% block body %}
+<div class="login-wrap">
+    <form class="login-card" method="post" action="/login">
+        <div class="logo-big">💰</div>
+        <h1>SkyCofl Relist</h1>
+        <p>Smart relist dashboard · private access</p>
+        {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+        <input type="password" name="password" placeholder="Password" autofocus autocomplete="current-password" required>
+        <button class="btn primary" type="submit">Unlock</button>
+    </form>
+</div>
+{% endblock %}
