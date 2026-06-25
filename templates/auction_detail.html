@@ -69,6 +69,89 @@
             {% if row['notes'] %}<div class="note-text">{{ row['notes'] }}</div>{% endif %}
         </div>
 
+        <!-- Undercut history -->
+        <div class="panel">
+            <h3>Undercuts</h3>
+            <div style="margin-bottom:12px; display:flex; gap:8px; flex-wrap:wrap">
+                <button class="btn small" onclick="checkUndercut('{{ card.uuid }}', this)">Check undercuts</button>
+            </div>
+            {% if undercut_history %}
+            <table class="tbl">
+                <thead><tr><th>When</th><th>Cheaper</th><th>Gap</th><th>Conf.</th></tr></thead>
+                <tbody>
+                {% for u in undercut_history[:10] %}
+                <tr>
+                    <td>{{ u['created_at'][:16].replace('T',' ') }}</td>
+                    <td>{{ u['candidate_price'] | coins }}</td>
+                    <td class="bad">-{{ u['gap_coins'] | coins }} (-{{ u['gap_percent'] }}%)</td>
+                    <td>{{ u['confidence'] }}%</td>
+                </tr>
+                <tr>
+                    <td colspan="4">{{ u['reason'] }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p style="color:var(--text-faint)">No meaningful cheaper comparable recorded yet.</p>
+            {% endif %}
+        </div>
+
+        <!-- Market context -->
+        <div class="panel">
+            <h3>Market context</h3>
+            {% if card.market_context %}
+            <p style="color:var(--text-dim); font-size:13px;">{{ card.market_context.safe_wording }}</p>
+            <div class="kv"><span class="k">Raw same-tag LBIN</span><span class="v">{{ card.raw_lbin_fmt }}</span></div>
+            <div class="kv"><span class="k">Volume/day</span><span class="v">{{ card.market_context.volume_per_day if card.market_context.volume_per_day is not none else '—' }}</span></div>
+            <div class="kv"><span class="k">24h trend</span><span class="v">{{ card.market_context.trend.day_pct if card.market_context.trend.day_pct is not none else '—' }}{% if card.market_context.trend.day_pct is not none %}%{% endif %}</span></div>
+            <div class="kv"><span class="k">7d trend</span><span class="v">{{ card.market_context.trend.week_pct if card.market_context.trend.week_pct is not none else '—' }}{% if card.market_context.trend.week_pct is not none %}%{% endif %}</span></div>
+            {% if card.market_context.history %}
+            <div class="kv"><span class="k">History min/avg/max</span><span class="v">{{ card.market_context.history.min | coins if card.market_context.history.min else '—' }} / {{ card.market_context.history.avg | coins if card.market_context.history.avg else '—' }} / {{ card.market_context.history.max | coins if card.market_context.history.max else '—' }}</span></div>
+            {% endif %}
+            {% if card.market_context.raw_same_tag_top %}
+            <h3 style="margin-top:18px">Cheapest same-tag listings</h3>
+            <table class="tbl">
+                <thead><tr><th>Item</th><th>Price</th><th>Label</th></tr></thead>
+                <tbody>
+                {% for r in card.market_context.raw_same_tag_top %}
+                <tr>
+                    <td>{{ r.item_name or '—' }}</td>
+                    <td>{{ r.price | coins }}</td>
+                    <td>{{ card.market_context.raw_same_tag_label }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% if card.market_context.rejected_reason_counts %}
+            <h3 style="margin-top:18px">Rejected reason counts</h3>
+            <div class="pill-list">
+                {% for k,v in card.market_context.rejected_reason_counts.items() %}
+                <span class="pill">{{ k }}: {{ v }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if card.market_context.rejected_examples %}
+            <h3 style="margin-top:18px">Rejected examples</h3>
+            <table class="tbl">
+                <thead><tr><th>Item</th><th>Price</th><th>Reason</th></tr></thead>
+                <tbody>
+                {% for r in card.market_context.rejected_examples %}
+                <tr>
+                    <td>{{ r.item_name or '—' }}</td>
+                    <td>{{ r.price | coins }}</td>
+                    <td>{{ r.rejections | join('; ') }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% else %}
+            <p style="color:var(--text-faint)">Run analysis to capture raw same-tag market context.</p>
+            {% endif %}
+        </div>
+
         <!-- Feature extraction -->
         <div class="panel">
             <h3>Extracted item features</h3>

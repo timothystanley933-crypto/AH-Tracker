@@ -133,6 +133,21 @@ class Settings:
         default_factory=lambda: _get_list("RELIST_ALERT_DECISIONS", "RELIST,CUT_LOSS,PROFIT_LOW,INCOMPARABLE")
     )
 
+    # Undercut / cheaper comparable alerts. These are advisory-only and use the
+    # comparable engine rather than raw same-tag LBIN.
+    undercut_alerts: bool = field(default_factory=lambda: _get_bool("UNDERCUT_ALERTS", True))
+    undercut_check_enabled: bool = field(default_factory=lambda: _get_bool("UNDERCUT_CHECK_ENABLED", True))
+    undercut_min_gap_coins: int = field(default_factory=lambda: _get_int("UNDERCUT_MIN_GAP_COINS", 250000))
+    undercut_min_gap_percent: float = field(default_factory=lambda: _get_float("UNDERCUT_MIN_GAP_PERCENT", 3))
+    undercut_min_comparable_score: int = field(default_factory=lambda: _get_int("UNDERCUT_MIN_COMPARABLE_SCORE", 75))
+    undercut_better_item_score: int = field(default_factory=lambda: _get_int("UNDERCUT_BETTER_ITEM_SCORE", 85))
+    undercut_cooldown_minutes: int = field(default_factory=lambda: _get_int("UNDERCUT_COOLDOWN_MINUTES", 60))
+    undercut_max_candidates_to_check: int = field(default_factory=lambda: _get_int("UNDERCUT_MAX_CANDIDATES_TO_CHECK", 60))
+    undercut_include_possible: bool = field(default_factory=lambda: _get_bool("UNDERCUT_INCLUDE_POSSIBLE", False))
+    undercut_notify_decisions: List[str] = field(
+        default_factory=lambda: _get_list("UNDERCUT_NOTIFY_DECISIONS", "ACTIVE,HOLD,RELIST,PROFIT_LOW,INCOMPARABLE")
+    )
+
     # Toggles
     # Master notification switch - when false, NO Discord/Pushover messages are sent.
     notifications_enabled: bool = field(default_factory=lambda: _get_bool("NOTIFICATIONS_ENABLED", True))

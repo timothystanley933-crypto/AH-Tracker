@@ -110,6 +110,24 @@ def _volume_summary(volume_per_day: Optional[float]) -> str:
     return f"~{volume_per_day:g}/day"
 
 
+def _format_undercut(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    return {
+        "candidate_uuid": _row_get(row, "candidate_uuid"),
+        "candidate_item_name": _row_get(row, "candidate_item_name") or "Cheaper comparable",
+        "candidate_price": _row_get(row, "candidate_price"),
+        "candidate_price_fmt": format_coins(_row_get(row, "candidate_price")),
+        "gap_coins": _row_get(row, "gap_coins") or 0,
+        "gap_coins_fmt": format_coins(_row_get(row, "gap_coins")),
+        "gap_percent": _row_get(row, "gap_percent") or 0,
+        "confidence": _row_get(row, "confidence") or 0,
+        "reason": _row_get(row, "reason") or "",
+        "created_at": _row_get(row, "created_at"),
+        "notified": bool(_row_get(row, "notified", 0)),
+    }
+
+
 def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[str, Any]:
     """Assemble a single auction card view model."""
     status = _row_status(row)
@@ -137,7 +155,13 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
             sell_estimate = json.loads(_row_get(analysis_row, "sell_estimate_json") or "{}")
         except (ValueError, TypeError):
             sell_estimate = {}
+        try:
+            market_context = json.loads(_row_get(analysis_row, "market_context_json") or "{}")
+        except (ValueError, TypeError):
+            market_context = {}
         volume_per_day = analysis_row["volume_per_day"]
+    else:
+        market_context = {}
 
     expected_profit = analysis_row["expected_profit"] if analysis_row else None
     suggested_price = analysis_row["suggested_price"] if analysis_row else None
@@ -183,6 +207,13 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
         "sell_like_suggested": sell_estimate.get("sale_likelihood_suggested", "unknown"),
         "sell_reason": sell_estimate.get("sell_time_reason", ""),
         "has_sell_estimate": bool(sell_estimate) and sell_estimate.get("estimated_sell_time_current") not in (None, "Unknown"),
+        "market_context": market_context,
+        "raw_lbin_fmt": format_coins(market_context.get("raw_same_tag_lbin")) if market_context else "—",
+        "raw_top_prices_fmt": [
+            format_coins(item.get("price")) for item in (market_context.get("raw_same_tag_top") or [])[:5]
+        ],
+        "top_rejection_reason": next(iter((market_context.get("rejected_reason_counts") or {}).keys()), ""),
+        "undercut": None,
         # Raw timestamps for sorting the Sold tab.
         "sold_at": _row_get(row, "sold_at"),
         "ended_at": _row_get(row, "ends_at"),
@@ -205,12 +236,22 @@ def build_cards(rows: List[sqlite3.Row], analyses: Dict[str, sqlite3.Row]) -> Li
     return [build_card(r, analyses.get(r["auction_uuid"])) for r in rows]
 
 
+def attach_undercuts(cards: List[Dict[str, Any]], undercuts: Dict[str, sqlite3.Row]) -> None:
+    for card in cards:
+        card["undercut"] = _format_undercut(undercuts.get(card["uuid"]))
+
+
 def compute_summary(cards: List[Dict[str, Any]], last_refresh: Optional[str]) -> Dict[str, Any]:
     active = [c for c in cards if c["status"] == "ACTIVE" and not c["ignored"]]
     tracked = [c for c in active if c["buy_cost"] is not None]
     missing = [c for c in active if c["missing_buy_cost"]]
     relist_warnings = [c for c in active if c["decision"] in ("RELIST", "CUT_LOSS", "PROFIT_LOW")]
     incomparable = [c for c in active if c["decision"] == "INCOMPARABLE"]
+    undercuts = [c for c in active if c.get("undercut")]
+    possible_undercuts = [
+        c for c in undercuts
+        if c["undercut"]["confidence"] < settings.undercut_min_comparable_score
+    ]
 
     potential_profit = sum(
         c["expected_profit"] for c in active
@@ -224,6 +265,8 @@ def compute_summary(cards: List[Dict[str, Any]], last_refresh: Optional[str]) ->
         "potential_profit_fmt": format_coins(potential_profit),
         "relist_warnings": len(relist_warnings),
         "incomparable": len(incomparable),
+        "undercuts": len(undercuts),
+        "possible_undercuts": len(possible_undercuts),
         "last_refresh": _ago(last_refresh) if last_refresh else "never",
     }
 

@@ -106,6 +106,34 @@
     </div>
     {% endif %}
 
+    {% if c.status == 'ACTIVE' %}
+    <div class="undercut-box" id="undercut-{{ c.uuid }}">
+        {% if c.undercut %}
+        <div class="uc-title">⚠ Undercut detected</div>
+        <div class="uc-row"><span>Cheaper comparable</span><b>{{ c.undercut.candidate_price_fmt }}</b></div>
+        <div class="uc-row"><span>Gap</span><b>-{{ c.undercut.gap_coins_fmt }} (-{{ c.undercut.gap_percent }}%)</b></div>
+        <div class="uc-row"><span>Confidence</span><b>{{ c.undercut.confidence }}%</b></div>
+        <div class="uc-reason">{{ c.undercut.reason }}</div>
+        {% else %}
+        <div class="uc-title muted">Undercut: No meaningful cheaper comparable found</div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if c.decision == 'INCOMPARABLE' and c.market_context %}
+    <div class="market-box">
+        <div class="market-title">Market context</div>
+        <div class="market-row"><span>Raw same-tag LBIN</span><b>{{ c.raw_lbin_fmt }}</b></div>
+        {% if c.raw_top_prices_fmt %}
+        <div class="market-note">Cheapest same-tag: {{ c.raw_top_prices_fmt | join(', ') }}</div>
+        {% endif %}
+        {% if c.top_rejection_reason %}
+        <div class="market-note">Rejected mostly for: {{ c.top_rejection_reason }}</div>
+        {% endif %}
+        <div class="market-note">Raw same-tag, not safe comparable.</div>
+    </div>
+    {% endif %}
+
     {% if c.reasons %}
     <div class="reason-block">
         <div class="reason-title">Why {{ c.decision_label }}</div>
@@ -120,6 +148,7 @@
     <div class="card-actions">
         {% if not c.sold %}
         <button class="btn small" onclick="analyse('{{ c.uuid }}', this)">⚡ Analyse</button>
+        {% if c.status == 'ACTIVE' %}<button class="btn small" onclick="checkUndercut('{{ c.uuid }}', this)">Check undercuts</button>{% endif %}
         <button class="btn small ghost" onclick="toggleIgnore('{{ c.uuid }}', this)">{% if c.ignored %}Unignore{% else %}Ignore{% endif %}</button>
         <button class="btn small danger" onclick="markSold('{{ c.uuid }}', this)">Mark sold</button>
         {% endif %}

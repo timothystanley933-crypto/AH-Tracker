@@ -48,6 +48,7 @@ class AnalysisResult:
     trend: Dict[str, Any]
     volume_per_day: Optional[float]
     sell_estimate: Dict[str, Any] = field(default_factory=dict)
+    market_context: Dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -119,6 +120,104 @@ def compute_trend(day: List[Dict[str, Any]], week: List[Dict[str, Any]]) -> tupl
     return trend, volume_per_day
 
 
+def _price_from_listing(item: Dict[str, Any]) -> Optional[int]:
+    try:
+        for key in ("startingBid", "price", "highestBidAmount"):
+            val = item.get(key)
+            if val is not None and not isinstance(val, bool):
+                price = int(float(val))
+                if price > 0:
+                    return price
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def _rejection_bucket(text: str) -> str:
+    lower = (text or "").lower()
+    if "rarity" in lower or "tier" in lower:
+        return "rarity mismatch"
+    if "pet level" in lower or "level too different" in lower:
+        return "pet level mismatch"
+    if "star" in lower:
+        return "stars mismatch"
+    if "recomb" in lower:
+        return "recomb mismatch"
+    if "gem" in lower:
+        return "gemstone mismatch"
+    if "attribute" in lower:
+        return "attribute mismatch"
+    if "enchant" in lower:
+        return "enchant mismatch"
+    if "score" in lower or "unknown" in lower:
+        return "missing NBT/features"
+    return "other mismatch"
+
+
+def _history_summary(day: List[Dict[str, Any]], week: List[Dict[str, Any]]) -> Dict[str, Any]:
+    prices = [p for p in (_point_price(pt) for pt in (week or day)) if p]
+    if not prices:
+        return {"min": None, "avg": None, "max": None}
+    return {
+        "min": int(round(min(prices))),
+        "avg": int(round(sum(prices) / len(prices))),
+        "max": int(round(max(prices))),
+    }
+
+
+def build_market_context(
+    *,
+    item_tag: Optional[str],
+    base_features: Dict[str, Any],
+    candidates_raw: List[Dict[str, Any]],
+    rejected: List[Dict[str, Any]],
+    rejection_counts: Dict[str, int],
+    trend: Dict[str, Any],
+    volume_per_day: Optional[float],
+    day_history: List[Dict[str, Any]],
+    week_history: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    raw = []
+    for item in candidates_raw:
+        price = _price_from_listing(item)
+        if not price:
+            continue
+        raw.append(
+            {
+                "uuid": item.get("uuid") or item.get("auctionId") or item.get("auction_uuid"),
+                "item_name": item.get("itemName") or item.get("item_name") or item.get("name") or item_tag or "",
+                "price": price,
+            }
+        )
+    raw.sort(key=lambda r: r["price"])
+
+    pet = base_features.get("pet") or {}
+    gems = base_features.get("gemstones") or {}
+    return {
+        "safe_wording": "No confident relist price because comparable data is unsafe. Raw LBIN may be misleading for this item.",
+        "raw_same_tag_lbin": raw[0]["price"] if raw else None,
+        "raw_same_tag_top": raw[:5],
+        "raw_same_tag_label": "Raw same-tag, not safe comparable",
+        "rejected_reason_counts": rejection_counts,
+        "rejected_examples": rejected[:5],
+        "volume_per_day": volume_per_day,
+        "trend": trend,
+        "history": _history_summary(day_history, week_history),
+        "features": {
+            "item_tag": base_features.get("item_tag") or item_tag,
+            "rarity": base_features.get("rarity"),
+            "pet_level": pet.get("level"),
+            "pet_tier": pet.get("tier"),
+            "stars": base_features.get("stars"),
+            "recombobulated": bool(base_features.get("recombobulated")),
+            "skin": base_features.get("skin") or pet.get("skin"),
+            "attributes": base_features.get("attributes") or {},
+            "gemstones": gems,
+            "important_enchants": base_features.get("important_enchants") or {},
+        },
+    }
+
+
 # --------------------------------------------------------------------------
 # Confidence
 # --------------------------------------------------------------------------
@@ -165,6 +264,7 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
     # 2. Comparable BIN listings.
     comparables: List[Comparable] = []
     rejected: List[Dict[str, Any]] = []
+    rejection_counts: Dict[str, int] = {}
     candidates_raw: List[Dict[str, Any]] = []
     if item_tag:
         candidates_raw = await cofl_client.get_active_bins_pages(
@@ -188,6 +288,8 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
                 )
             )
         else:
+            bucket = _rejection_bucket("; ".join(result.rejections or []))
+            rejection_counts[bucket] = rejection_counts.get(bucket, 0) + 1
             if len(rejected) < 12:  # keep the detail page readable
                 rejected.append(
                     {
@@ -206,6 +308,8 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
     # 3. Trend / volume (secondary evidence).
     trend: Dict[str, Any] = {"day_pct": None, "week_pct": None, "volatility": None}
     volume_per_day: Optional[float] = None
+    day_hist: List[Dict[str, Any]] = []
+    week_hist: List[Dict[str, Any]] = []
     if item_tag:
         day_hist = await cofl_client.get_price_history(item_tag, "day")
         week_hist = await cofl_client.get_price_history(item_tag, "week")
@@ -234,6 +338,17 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
         volume_per_day=volume_per_day,
         trend=trend,
     )
+    market_context = build_market_context(
+        item_tag=item_tag,
+        base_features=base_features,
+        candidates_raw=candidates_raw,
+        rejected=rejected,
+        rejection_counts=rejection_counts,
+        trend=trend,
+        volume_per_day=volume_per_day,
+        day_history=day_hist,
+        week_history=week_hist,
+    )
 
     result = AnalysisResult(
         decision=decision,
@@ -248,6 +363,7 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
         trend=trend,
         volume_per_day=volume_per_day,
         sell_estimate=sell_estimate,
+        market_context=market_context,
     )
 
     _persist(uuid, result)
@@ -520,6 +636,7 @@ def _persist(uuid: str, result: AnalysisResult) -> None:
                 "rejected_json": json.dumps(result.rejected),
                 "volume_per_day": result.volume_per_day,
                 "sell_estimate_json": json.dumps(result.sell_estimate),
+                "market_context_json": json.dumps(result.market_context),
             }
         )
     except Exception as exc:  # noqa: BLE001

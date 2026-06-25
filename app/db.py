@@ -89,6 +89,7 @@ def init_db() -> None:
                 rejected_json          TEXT,
                 volume_per_day         REAL,
                 sell_estimate_json     TEXT,
+                market_context_json    TEXT,
                 created_at             TEXT
             );
 
@@ -113,10 +114,29 @@ def init_db() -> None:
                 accepted_at       TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS undercut_alerts (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                auction_uuid        TEXT NOT NULL,
+                candidate_uuid      TEXT,
+                item_tag            TEXT,
+                my_price            INTEGER,
+                candidate_price     INTEGER,
+                gap_coins           INTEGER,
+                gap_percent         REAL,
+                confidence          INTEGER,
+                candidate_item_name TEXT,
+                reason              TEXT,
+                created_at          TEXT,
+                notified            INTEGER DEFAULT 0,
+                notification_hash   TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_analysis_uuid ON auction_analysis(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_notif_uuid ON notifications(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_relink_new ON relist_links(new_auction_uuid);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_relink_pair ON relist_links(old_auction_uuid, new_auction_uuid);
+            CREATE INDEX IF NOT EXISTS idx_undercut_uuid ON undercut_alerts(auction_uuid);
+            CREATE INDEX IF NOT EXISTS idx_undercut_hash ON undercut_alerts(notification_hash);
             """
         )
 
@@ -163,6 +183,8 @@ def _migrate() -> None:
             conn.execute("ALTER TABLE auction_analysis ADD COLUMN rejected_json TEXT")
         if "sell_estimate_json" not in acols:
             conn.execute("ALTER TABLE auction_analysis ADD COLUMN sell_estimate_json TEXT")
+        if "market_context_json" not in acols:
+            conn.execute("ALTER TABLE auction_analysis ADD COLUMN market_context_json TEXT")
 
 
 # --------------------------------------------------------------------------
@@ -374,8 +396,9 @@ def insert_analysis(row: Dict[str, Any]) -> int:
             INSERT INTO auction_analysis
                 (auction_uuid, decision, suggested_price, expected_profit, confidence,
                  comparable_count, comparable_prices_json, reasons_json, item_features_json,
-                 trend_json, rejected_json, volume_per_day, sell_estimate_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trend_json, rejected_json, volume_per_day, sell_estimate_json,
+                 market_context_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("auction_uuid"),
@@ -391,6 +414,7 @@ def insert_analysis(row: Dict[str, Any]) -> int:
                 row.get("rejected_json"),
                 row.get("volume_per_day"),
                 row.get("sell_estimate_json"),
+                row.get("market_context_json"),
                 utcnow(),
             ),
         )
@@ -724,3 +748,117 @@ def get_accepted_carry_link(new_uuid: str) -> Optional[sqlite3.Row]:
             """,
             (new_uuid,),
         ).fetchone()
+
+
+# --------------------------------------------------------------------------
+# undercut alerts
+# --------------------------------------------------------------------------
+
+def record_undercut_alert(
+    *,
+    auction_uuid: str,
+    candidate_uuid: Optional[str],
+    item_tag: Optional[str],
+    my_price: int,
+    candidate_price: int,
+    gap_coins: int,
+    gap_percent: float,
+    confidence: int,
+    candidate_item_name: Optional[str],
+    reason: str,
+    notification_hash: str,
+    notified: bool = False,
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO undercut_alerts
+                (auction_uuid, candidate_uuid, item_tag, my_price, candidate_price,
+                 gap_coins, gap_percent, confidence, candidate_item_name, reason,
+                 created_at, notified, notification_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                auction_uuid, candidate_uuid, item_tag, my_price, candidate_price,
+                gap_coins, gap_percent, confidence, candidate_item_name, reason,
+                utcnow(), 1 if notified else 0, notification_hash,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def mark_undercut_alert_notified(alert_id: int, notification_hash: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE undercut_alerts SET notified = 1, notification_hash = ? WHERE id = ?",
+            (notification_hash, alert_id),
+        )
+
+
+def latest_undercut_for_auction(uuid: str) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM undercut_alerts
+             WHERE auction_uuid = ?
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+            """,
+            (uuid,),
+        ).fetchone()
+
+
+def latest_undercuts_map() -> Dict[str, sqlite3.Row]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.* FROM undercut_alerts u
+            JOIN (
+                SELECT auction_uuid, MAX(id) AS max_id
+                FROM undercut_alerts GROUP BY auction_uuid
+            ) latest ON u.id = latest.max_id
+            """
+        ).fetchall()
+    return {row["auction_uuid"]: row for row in rows}
+
+
+def undercut_history(uuid: str, limit: int = 20) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT * FROM undercut_alerts
+                 WHERE auction_uuid = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?
+                """,
+                (uuid, limit),
+            ).fetchall()
+        )
+
+
+def recent_undercut_alert_exists(
+    uuid: str,
+    candidate_uuid: Optional[str],
+    notification_hash: Optional[str],
+    cooldown_minutes: int,
+    *,
+    notified_only: bool = True,
+) -> bool:
+    since = (datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes)).isoformat()
+    clauses = ["auction_uuid = ?", "created_at >= ?"]
+    params: List[Any] = [uuid, since]
+    if notified_only:
+        clauses.append("notified = 1")
+    if notification_hash:
+        clauses.append("notification_hash = ?")
+        params.append(notification_hash)
+    elif candidate_uuid:
+        clauses.append("candidate_uuid = ?")
+        params.append(candidate_uuid)
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT 1 FROM undercut_alerts WHERE {' AND '.join(clauses)} LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        return row is not None

@@ -129,6 +129,22 @@ async function findPreviousBuyCost(uuid, el) {
     }
 }
 
+async function checkUndercut(uuid, el) {
+    busy(el, true, 'Checking…');
+    try {
+        const data = await postJSON('/api/auctions/' + uuid + '/check-undercut', {});
+        if (data.undercut) {
+            showToast('Undercut found: ' + data.confidence + '% confidence', 'ok');
+        } else {
+            showToast('No meaningful undercut found', 'ok');
+        }
+        setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+        busy(el, false);
+        showToast('Undercut check failed: ' + e.message, 'err');
+    }
+}
+
 async function toggleIgnore(uuid, el) {
     busy(el, true, '…');
     try {

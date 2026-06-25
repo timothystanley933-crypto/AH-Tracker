@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import analysis, auth, carry, db, notifications, scheduler, views
+from . import analysis, auth, carry, db, notifications, scheduler, undercut, views
 from .config import settings
 from .formatting import format_coins, format_profit, parse_coins
 
@@ -133,6 +133,7 @@ async def dashboard(request: Request, filter: str = "active", sort: str = "recen
     rows = db.list_auctions(include_inactive=True)
     analyses = db.latest_analyses_map()
     cards = views.build_cards(rows, analyses)
+    views.attach_undercuts(cards, db.latest_undercuts_map())
     carry_suggestions = carry.pending_for_cards()
     for card in cards:
         if card["missing_buy_cost"]:
@@ -198,6 +199,7 @@ async def auction_detail(request: Request, uuid: str):
     history = db.analysis_history(uuid, limit=10)
     notifs = db.notification_history(uuid, limit=20)
     carry_link = db.get_accepted_carry_link(uuid)
+    undercut_history = db.undercut_history(uuid, limit=20)
 
     return templates.TemplateResponse(
         "auction_detail.html",
@@ -212,6 +214,7 @@ async def auction_detail(request: Request, uuid: str):
             "history": history,
             "notifications": notifs,
             "carry_link": carry_link,
+            "undercut_history": undercut_history,
             "settings": settings,
         },
     )
@@ -359,6 +362,31 @@ async def api_carry_ignore(uuid: str):
     return {"ok": True, "ignored": True}
 
 
+@app.post("/api/auctions/{uuid}/check-undercut")
+async def api_check_undercut(uuid: str):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    result = await undercut.check_auction(uuid, notify=False)
+    if not result.get("ok"):
+        return JSONResponse({"error": result.get("error", "undercut check failed")}, status_code=400)
+    return result
+
+
+@app.get("/api/auctions/{uuid}/undercuts")
+async def api_undercuts(uuid: str):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    latest = db.latest_undercut_for_auction(uuid)
+    history = db.undercut_history(uuid, limit=20)
+    return {
+        "auction_uuid": uuid,
+        "latest": dict(latest) if latest else None,
+        "history": [dict(r) for r in history],
+    }
+
+
 @app.post("/api/auctions/sync")
 async def api_sync():
     stats = await scheduler.run_once()
@@ -412,5 +440,6 @@ async def api_get_analysis(uuid: str):
         "trend": json.loads(analysis_row["trend_json"] or "{}"),
         "volume_per_day": analysis_row["volume_per_day"],
         "sell_estimate": json.loads((analysis_row["sell_estimate_json"] if "sell_estimate_json" in analysis_row.keys() else None) or "{}"),
+        "market_context": json.loads((analysis_row["market_context_json"] if "market_context_json" in analysis_row.keys() else None) or "{}"),
         "created_at": analysis_row["created_at"],
     }

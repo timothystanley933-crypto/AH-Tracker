@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import analysis, db, notifications, sync
+from . import analysis, db, notifications, sync, undercut
 from .config import settings
 
 log = logging.getLogger("scheduler")
@@ -28,7 +28,16 @@ _running = False
 async def run_once() -> dict:
     """One full cycle. Safe to call manually from an endpoint too."""
     global last_run, last_stats
-    stats = {"synced": {}, "analysed": 0, "alerts": 0, "errors": 0}
+    stats = {
+        "synced": {},
+        "analysed": 0,
+        "alerts": 0,
+        "undercuts_checked": 0,
+        "undercuts_found": 0,
+        "undercut_alerts": 0,
+        "undercut_cooldowns": 0,
+        "errors": 0,
+    }
 
     try:
         stats["synced"] = await sync.sync_player_auctions()
@@ -58,6 +67,17 @@ async def run_once() -> dict:
                 stats["errors"] += 1
     except Exception as exc:  # noqa: BLE001
         log.warning("Analysis loop failed: %s", exc)
+        stats["errors"] += 1
+
+    try:
+        undercut_stats = await undercut.check_active_auctions(notify=True)
+        stats["undercuts_checked"] = undercut_stats["checked"]
+        stats["undercuts_found"] = undercut_stats["found"]
+        stats["undercut_alerts"] = undercut_stats["notified"]
+        stats["undercut_cooldowns"] = undercut_stats["cooldown"]
+        stats["errors"] += undercut_stats["errors"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Undercut loop failed: %s", exc)
         stats["errors"] += 1
 
     last_run = datetime.now(timezone.utc).isoformat()

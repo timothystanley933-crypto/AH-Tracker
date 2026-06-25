@@ -78,7 +78,7 @@ a:hover { text-decoration: underline; }
 /* ---------- Summary bar ---------- */
 .summary {
     display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(8, 1fr);
     gap: 12px;
     margin-bottom: 22px;
 }
@@ -329,6 +329,34 @@ select.sort {
 .sell-estimate .se-title { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
 .sell-estimate .se-row { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text-dim); padding: 1px 0; }
 .sell-estimate .se-row b { color: var(--text); font-weight: 600; }
+
+.undercut-box, .market-box {
+    background: var(--bg-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    padding: 9px 11px;
+}
+.undercut-box { border-color: rgba(245,146,27,.28); }
+.uc-title, .market-title {
+    font-size: 11px;
+    color: #f4dd86;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-bottom: 5px;
+    font-weight: 700;
+}
+.uc-title.muted { color: var(--text-faint); margin-bottom: 0; }
+.uc-row, .market-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    padding: 1px 0;
+}
+.uc-row b, .market-row b { color: var(--text); font-weight: 600; text-align: right; }
+.uc-reason, .market-note { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; overflow-wrap: anywhere; }
+.market-title { color: #cfe0ff; }
 
 .reason-block {
     background: var(--bg-2);
