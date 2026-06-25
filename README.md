@@ -112,9 +112,12 @@ needed for a single-user dashboard.
 | `RELIST_ALERT_COOLDOWN_MINUTES` | `60` | Per-item alert cooldown. |
 | `RELIST_ALERT_DECISIONS` | `RELIST,CUT_LOSS,PROFIT_LOW,INCOMPARABLE` | Which decisions alert. |
 | `INCOMPARABLE_ALERT_THRESHOLD` | `1000000` | Only alert INCOMPARABLE above this value. |
+| `NOTIFICATIONS_ENABLED` | `true` | Master switch. `false` = send no Discord/Pushover at all (safe for local dev). |
+| `FIRST_SYNC_SUPPRESS_SOLD_ALERTS` | `true` | Never alert about already-sold auctions on the first sync of a fresh DB. |
 | `SOLD_ALERTS` | `true` | Send sold alerts. |
 | `RELIST_ALERTS` | `true` | Send relist/decision alerts. |
-| `STARTUP_MESSAGE` | `true` | Send a "dashboard online" message at boot. |
+| `STARTUP_MESSAGE` | `false` | Send a "dashboard online" message at boot. |
+| `STALE_AFTER_MISSED_SYNCS` | `2` | Missed syncs before a vanished active auction becomes STALE. |
 | `DATABASE_PATH` | `data/app.db` | SQLite file path. |
 
 ---
@@ -193,6 +196,55 @@ buys, lists, cancels, or clicks anything in-game. You make every trade yourself.
   `RELIST_COMPARABLE_PAGES` or increase `CHECK_INTERVAL_SECONDS` if you see
   frequent warnings in the logs.
 - **Run the quick tests** — `python -m pytest tests/ -q` (or `python tests/test_basic.py`).
+
+---
+
+## 8. Auction states
+
+The player auctions endpoint returns *recent* auctions, not only your live ones,
+so every auction is classified into a state instead of being assumed active:
+
+- **ACTIVE** — BIN (when the flag is present), no winning bid, end time in the
+  future, and `startingBid > 0`. These are the only ones shown by default.
+- **SOLD** — has a winning bid (`highestBid > 0`). The sold price comes from the
+  highest bid; the listing price always comes from `startingBid`.
+- **EXPIRED** — end time passed with no bids.
+- **STALE** — was ACTIVE in the DB but missing from `STALE_AFTER_MISSED_SYNCS`
+  (default 2) consecutive successful syncs. Hidden by default.
+
+The dashboard defaults to **Active** only. Use the **Sold / Expired / Stale /
+Ignored / All** filter chips to see the rest.
+
+**Sold notifications fire only for a real ACTIVE → SOLD transition the app
+actually observed.** Auctions that were already sold/expired when first seen (or
+on the first sync of a fresh DB) are recorded but flagged handled, so they never
+notify — running locally will not blast your phone with old sales. Set
+`NOTIFICATIONS_ENABLED=false` to silence everything while developing.
+
+## 9. Resetting the database
+
+The database holds your tracked auctions, **buy costs**, notes and analysis
+history. Resetting it wipes all of that. The app recreates the schema on next
+start.
+
+**Local (deletes saved buy costs):**
+```bash
+# Stop the app first, then delete the SQLite files:
+rm -f data/app.db data/app.db-wal data/app.db-shm      # macOS/Linux
+del data\app.db data\app.db-wal data\app.db-shm        # Windows cmd
+Remove-Item data\app.db*                                # PowerShell
+```
+Restart the app and run **↻ Sync now**. The first sync after a wipe marks any
+already-sold/expired auctions as handled — **no notifications are sent**.
+
+**Railway (only if you want to wipe saved buy costs):**
+Your DB lives on the mounted volume at `/app/data/app.db`. To wipe it, open a
+Railway shell on the service and remove that file, or detach/recreate the
+volume, then redeploy. Do this **only** if you deliberately want to discard your
+saved buy costs and history — a normal redeploy keeps the volume intact.
+
+> Tip: you don't need to reset just to clear old SOLD/EXPIRED clutter — they're
+> already hidden by default and only appear under their filter chips.
 
 ---
 
