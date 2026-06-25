@@ -166,6 +166,22 @@ price-history summary, past analyses and notification history.
 - Items without a buy cost are flagged: *"Enter buy cost to enable profit/relist
   analysis."*
 
+### Your data is safe across syncs
+
+`buy_cost`, `min_profit`, `target_sell_price`, `notes` and `ignored` are
+**user-owned**. Syncing from SkyCofl only ever updates *market* fields
+(item name/tag, listing price, status, timestamps) — it never overwrites a saved
+buy cost or a min-profit you changed. Restarting the app is also safe: the
+database is opened, not recreated.
+
+> ⚠️ **Persistence depends on `DATABASE_PATH`.** Your buy costs live in the
+> SQLite file at `DATABASE_PATH` (default `data/app.db`). **Deleting or changing
+> `DATABASE_PATH` — or redeploying without a persistent volume — wipes your saved
+> buy costs.** To keep them, point `DATABASE_PATH` at a stable location and, if
+> you ever move it, copy the old `app.db` (plus any `-wal`/`-shm` files) to the
+> new path first. On Railway, mount a volume at `/app/data` (see §2) so the file
+> survives redeploys.
+
 ---
 
 ## 6. Safety note
