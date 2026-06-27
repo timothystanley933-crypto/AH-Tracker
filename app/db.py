@@ -149,10 +149,34 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_notif_uuid ON notifications(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_relink_new ON relist_links(new_auction_uuid);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_relink_pair ON relist_links(old_auction_uuid, new_auction_uuid);
+            CREATE TABLE IF NOT EXISTS flip_checks (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                auction_uuid             TEXT,
+                item_tag                 TEXT,
+                item_name                TEXT,
+                buy_price                INTEGER,
+                decision                 TEXT,
+                suggested_fast_price     INTEGER,
+                suggested_balanced_price INTEGER,
+                suggested_greedy_price   INTEGER,
+                expected_profit          INTEGER,
+                profit_after_one_relist  INTEGER,
+                max_safe_buy_price       INTEGER,
+                confidence               INTEGER,
+                risk_level               TEXT,
+                reasons_json             TEXT,
+                features_json            TEXT,
+                comparables_json         TEXT,
+                rejected_json            TEXT,
+                market_context_json      TEXT,
+                created_at               DATETIME
+            );
+
             CREATE INDEX IF NOT EXISTS idx_undercut_uuid ON undercut_alerts(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_undercut_hash ON undercut_alerts(notification_hash);
             CREATE INDEX IF NOT EXISTS idx_fee_uuid ON auction_fee_events(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_fee_identity ON auction_fee_events(item_identity_key);
+            CREATE INDEX IF NOT EXISTS idx_flip_created ON flip_checks(created_at);
             """
         )
 
@@ -1154,3 +1178,50 @@ def recent_undercut_alert_exists(
             tuple(params),
         ).fetchone()
         return row is not None
+
+
+# --------------------------------------------------------------------------
+# flip_checks  (pre-buy Flip Checker history)
+# --------------------------------------------------------------------------
+
+def insert_flip_check(rec: Dict[str, Any]) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO flip_checks
+                (auction_uuid, item_tag, item_name, buy_price, decision,
+                 suggested_fast_price, suggested_balanced_price, suggested_greedy_price,
+                 expected_profit, profit_after_one_relist, max_safe_buy_price,
+                 confidence, risk_level, reasons_json, features_json,
+                 comparables_json, rejected_json, market_context_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rec.get("auction_uuid"), rec.get("item_tag"), rec.get("item_name"),
+                rec.get("buy_price"), rec.get("decision"),
+                rec.get("suggested_fast_price"), rec.get("suggested_balanced_price"),
+                rec.get("suggested_greedy_price"), rec.get("expected_profit"),
+                rec.get("profit_after_one_relist"), rec.get("max_safe_buy_price"),
+                rec.get("confidence"), rec.get("risk_level"),
+                rec.get("reasons_json"), rec.get("features_json"),
+                rec.get("comparables_json"), rec.get("rejected_json"),
+                rec.get("market_context_json"), utcnow(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_flip_check(check_id: int) -> Optional[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM flip_checks WHERE id = ?", (check_id,)
+        ).fetchone()
+
+
+def list_flip_checks(limit: int = 50) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return list(
+            conn.execute(
+                "SELECT * FROM flip_checks ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        )

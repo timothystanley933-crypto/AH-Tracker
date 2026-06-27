@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Flip Checker History · SkyCofl Relist{% endblock %}
+{% block body %}
+<div class="wrap">
+    <a class="back-link" href="/flip-checker">← Back to Flip Checker</a>
+    <div class="topbar">
+        <div class="brand"><span class="logo">🕑</span><div>Flip Checker History<small>Past pre-buy checks</small></div></div>
+        {% if settings.login_required %}<a class="btn ghost" href="/logout">Logout</a>{% endif %}
+    </div>
+
+    <div class="panel">
+        {% if checks %}
+        <table class="tbl">
+            <thead><tr><th>When</th><th>Item</th><th>Buy</th><th>Decision</th><th>Profit</th><th>After 1 relist</th><th>Risk</th><th>Conf.</th></tr></thead>
+            <tbody>
+            {% for ch in checks %}
+            <tr>
+                <td>{{ (ch['created_at'] or '')[:16].replace('T',' ') }}</td>
+                <td><a href="{{ settings.auction_url(ch['auction_uuid']) }}" target="_blank" rel="noopener">{{ ch['item_name'] or ch['item_tag'] or '—' }}</a></td>
+                <td>{{ ch['buy_price'] | coins if ch['buy_price'] is not none else '—' }}</td>
+                <td><span class="badge {{ ch['decision'] }}">{{ ch['decision'] }}</span></td>
+                <td class="{% if ch['expected_profit'] is not none and ch['expected_profit'] >= 0 %}ok{% else %}bad{% endif %}">{{ ch['expected_profit'] | profit if ch['expected_profit'] is not none else '—' }}</td>
+                <td class="{% if ch['profit_after_one_relist'] is not none and ch['profit_after_one_relist'] >= 0 %}ok{% else %}bad{% endif %}">{{ ch['profit_after_one_relist'] | profit if ch['profit_after_one_relist'] is not none else '—' }}</td>
+                <td>{{ ch['risk_level'] or '—' }}</td>
+                <td>{{ ch['confidence'] }}{% if ch['confidence'] is not none %}%{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:var(--text-faint)">No flip checks saved yet. Run one from the <a href="/flip-checker">Flip Checker</a>.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

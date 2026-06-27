@@ -89,6 +89,12 @@ class Settings:
         default_factory=lambda: _get_int("PRICE_WALL_MIN_LISTINGS", 3)
     )
 
+    # Flip checker: minimum sales/day before a flip can be a confident BUY
+    # (below this a good-margin flip is downgraded to MAYBE - slow to sell).
+    flip_min_volume_for_buy: float = field(
+        default_factory=lambda: _get_float("FLIP_MIN_VOLUME_FOR_BUY", 1.0)
+    )
+
     # Comparable engine
     relist_comparable_only: bool = field(default_factory=lambda: _get_bool("RELIST_COMPARABLE_ONLY", True))
     relist_comparable_pages: int = field(default_factory=lambda: _get_int("RELIST_COMPARABLE_PAGES", 8))

@@ -283,6 +283,145 @@ async function viewFeeBreakdown(uuid, el) {
     }
 }
 
+// ---- Flip Checker ----
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+}
+function coins(n) { return (n == null) ? '—' : Number(n).toLocaleString(); }
+function signed(n) { return (n == null) ? '—' : (n >= 0 ? '+' : '') + Number(n).toLocaleString(); }
+
+const FLIP_LABELS = { BUY: 'BUY', MAYBE: 'MAYBE', DO_NOT_BUY: 'DO NOT BUY', INCOMPARABLE: 'INCOMPARABLE / MANUAL CHECK' };
+
+async function runFlipCheck(btn) {
+    const input = (document.getElementById('flip-input') || {}).value || '';
+    const buy = (document.getElementById('flip-buy') || {}).value || '';
+    const min = (document.getElementById('flip-min') || {}).value || '';
+    const errBox = document.getElementById('flip-error');
+    const out = document.getElementById('flip-result');
+    if (errBox) errBox.style.display = 'none';
+    if (out) out.innerHTML = '';
+    busy(btn, true, 'Checking…');
+    try {
+        const data = await postJSON('/api/flip-check', {
+            auction_url_or_uuid: input, buy_price: buy, min_profit: min
+        });
+        renderFlipResult(data);
+    } catch (e) {
+        if (errBox) { errBox.style.display = ''; errBox.innerHTML = '<span>⚠ ' + esc(e.message) + '</span>'; }
+        showToast('Flip check failed: ' + e.message, 'err');
+    } finally {
+        busy(btn, false);
+    }
+}
+
+function renderFlipOptionRow(o) {
+    if (!o) return '';
+    return '<tr><td>' + esc(o.name) + '</td><td>' + esc(o.price_fmt) + '</td>' +
+        '<td class="' + ((o.profit != null && o.profit >= 0) ? 'ok' : 'bad') + '">' + coins(o.profit) + '</td>' +
+        '<td>' + (o.roi_percent == null ? '—' : o.roi_percent + '%') + '</td>' +
+        '<td>' + esc(o.sale_chance) + '</td><td>' + esc(o.time_to_sell) + '</td><td>' + esc(o.risk) + '</td></tr>';
+}
+
+function renderFlipResult(d) {
+    const out = document.getElementById('flip-result');
+    if (!out) return;
+    const s = d.suggested || {};
+    const ms = d.max_safe_buy_prices || {};
+    const sc = d.scores || {};
+    const wall = (d.price_walls && d.price_walls.length) ? d.price_walls[0] : null;
+
+    let html = '<div class="panel flip-card">';
+    html += '<div class="flip-head"><span class="badge ' + esc(d.decision) + ' flip-badge">' + esc(FLIP_LABELS[d.decision] || d.decision) + '</span>' +
+        '<div class="flip-headline">' + esc(d.headline) + '</div></div>';
+
+    // Summary
+    html += '<div class="flip-summary">';
+    html += '<div class="fs"><span>Item</span><b>' + esc(d.item_name) + '</b></div>';
+    html += '<div class="fs"><span>Buy price</span><b>' + coins(d.buy_price) + '</b></div>';
+    html += '<div class="fs"><span>Current auction price</span><b>' + coins(d.current_price) + '</b></div>';
+    html += '<div class="fs"><span>True profit (first listing)</span><b class="' + ((d.expected_profit != null && d.expected_profit >= 0) ? 'pos' : 'neg') + '">' + signed(d.expected_profit) + '</b></div>';
+    html += '<div class="fs"><span>Profit after one relist</span><b class="' + ((d.profit_after_one_relist != null && d.profit_after_one_relist >= 0) ? 'pos' : 'neg') + '">' + signed(d.profit_after_one_relist) + '</b></div>';
+    html += '<div class="fs"><span>Profit after two relists</span><b class="' + ((d.profit_after_two_relists != null && d.profit_after_two_relists >= 0) ? 'pos' : 'neg') + '">' + signed(d.profit_after_two_relists) + '</b></div>';
+    html += '<div class="fs"><span>ROI</span><b>' + (d.roi_percent == null ? '—' : d.roi_percent + '%') + '</b></div>';
+    html += '<div class="fs"><span>Confidence</span><b>' + esc(d.confidence) + '%</b></div>';
+    html += '<div class="fs"><span>Overall risk</span><b>' + esc(d.risk_level) + '</b></div>';
+    html += '<div class="fs"><span>Breakeven sale price</span><b>' + coins(d.breakeven_sale_price) + '</b></div>';
+    html += '</div>';
+
+    // Reasons
+    if (d.reasons && d.reasons.length) {
+        html += '<div class="reason-block"><div class="reason-title">Why ' + esc(FLIP_LABELS[d.decision] || d.decision) + '</div><ul>';
+        d.reasons.forEach(r => { html += '<li>' + esc(r) + '</li>'; });
+        html += '</ul></div>';
+    }
+
+    // Suggested options
+    if (s.fast || s.balanced || s.greedy) {
+        html += '<h3>Suggested relist options</h3><table class="tbl"><thead><tr><th>Option</th><th>List price</th><th>Profit after fees</th><th>ROI</th><th>Sale chance</th><th>Time to sell</th><th>Risk</th></tr></thead><tbody>';
+        html += renderFlipOptionRow(s.fast) + renderFlipOptionRow(s.balanced) + renderFlipOptionRow(s.greedy);
+        html += '</tbody></table>';
+    }
+
+    // Max safe buy prices
+    html += '<h3>Max safe buy price</h3><div class="flip-summary">';
+    html += '<div class="fs"><span>For 2m profit</span><b>' + coins(ms.for_2m_profit) + '</b></div>';
+    html += '<div class="fs"><span>For 5m profit</span><b>' + coins(ms.for_5m_profit) + '</b></div>';
+    html += '<div class="fs"><span>For 10m profit</span><b>' + coins(ms.for_10m_profit) + '</b></div>';
+    html += '<div class="fs"><span>For your min profit</span><b>' + coins(ms.for_min_profit) + '</b></div>';
+    html += '<div class="fs"><span>Min profit, surviving one relist</span><b>' + coins(ms.for_min_profit_after_relist) + '</b></div>';
+    html += '</div>';
+
+    // Market context
+    html += '<h3>Market context</h3><div class="flip-summary">';
+    html += '<div class="fs"><span>Volume/day</span><b>' + (d.volume_per_day == null ? 'unknown' : d.volume_per_day) + '</b></div>';
+    html += '<div class="fs"><span>Trend</span><b>' + esc(d.trend_label) + '</b></div>';
+    html += '<div class="fs"><span>Raw same-tag LBIN</span><b>' + coins((d.market_context || {}).raw_same_tag_lbin) + '</b></div>';
+    html += '<div class="fs"><span>Price rank</span><b>' + (d.price_rank ? ('#' + d.price_rank + ' of ' + d.price_rank_total) : '—') + '</b></div>';
+    html += '<div class="fs"><span>Price wall</span><b>' + (wall ? (wall.count + ' within ' + wall.window_percent + '% of ' + coins(wall.price)) : 'none') + '</b></div>';
+    html += '<div class="fs"><span>Liquidity / Demand / Competition</span><b>' + esc((sc.liquidity || {}).label) + ' · ' + esc((sc.demand || {}).label) + ' · ' + esc((sc.competition || {}).label) + '</b></div>';
+    html += '</div>';
+
+    // Feature summary
+    html += '<div class="reason" style="margin-top:10px"><b>Features:</b> ' + esc(d.feature_summary) + '</div>';
+    if (d.confidence_notes && d.confidence_notes.length) {
+        html += '<div class="reason muted">Confidence reduced by: ' + esc(d.confidence_notes.join(', ')) + '</div>';
+    }
+
+    // Comparable table
+    html += '<h3>Comparable proof (' + (d.comparables ? d.comparables.length : 0) + ')</h3>';
+    if (d.comparables && d.comparables.length) {
+        html += '<table class="tbl"><thead><tr><th>Price</th><th>Item</th><th>Score</th><th>Verdict</th><th>Why</th></tr></thead><tbody>';
+        d.comparables.forEach(c => {
+            html += '<tr><td class="ok">' + coins(c.price) + '</td><td>' + esc(c.item_name) + '</td><td>' + esc(c.score) +
+                '</td><td>' + esc(c.verdict) + '</td><td>' + esc((c.reasons || []).join('; ')) +
+                (c.url ? ' · <a href="' + esc(c.url) + '" target="_blank" rel="noopener">open ↗</a>' : '') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+    } else {
+        html += '<p class="muted">No safe comparable listings passed the quality threshold — this is why raw LBIN is not used.</p>';
+    }
+
+    // Rejected
+    if (d.rejected && d.rejected.length) {
+        html += '<h3>Rejected comparables (' + d.rejected.length + ')</h3><table class="tbl"><thead><tr><th>Price</th><th>Item</th><th>Rejected because</th></tr></thead><tbody>';
+        d.rejected.forEach(r => {
+            html += '<tr><td class="bad">' + coins(r.price) + '</td><td>' + esc(r.item_name) + '</td><td>' + esc((r.rejections || [r.reason]).join('; ')) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        if (d.rejection_counts) {
+            const parts = Object.keys(d.rejection_counts).map(k => k + ': ' + d.rejection_counts[k]);
+            if (parts.length) html += '<p class="muted" style="margin-top:6px">' + esc(parts.join(' · ')) + '</p>';
+        }
+    }
+
+    html += '</div>';
+    out.innerHTML = html;
+    out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showToast('Flip checked: ' + (FLIP_LABELS[d.decision] || d.decision), d.decision === 'BUY' ? 'ok' : (d.decision === 'DO_NOT_BUY' ? 'err' : ''));
+}
+
 async function syncNow(el) {
     busy(el, true, 'Syncing…');
     try {

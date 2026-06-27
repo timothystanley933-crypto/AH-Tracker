@@ -526,3 +526,21 @@ table.tbl td.bad { color: var(--c-cutloss); }
 .urgent-bucket li a { color: var(--text); text-decoration: none; }
 .urgent-bucket li a:hover { color: var(--accent); }
 .ub-note { color: var(--text-faint); }
+
+/* --- Flip Checker (added) --- */
+.badge.BUY { background: rgba(54,194,107,.16); color: var(--c-hold); border-color: rgba(54,194,107,.35); }
+.badge.MAYBE { background: rgba(244,205,58,.16); color: var(--c-profitlow); border-color: rgba(244,205,58,.35); }
+.badge.DO_NOT_BUY { background: rgba(239,77,86,.16); color: var(--c-cutloss); border-color: rgba(239,77,86,.35); }
+.badge.INCOMPARABLE { background: rgba(138,150,166,.14); color: var(--c-incomparable); border-color: rgba(138,150,166,.3); }
+
+.flip-card { margin-top: 16px; }
+.flip-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.flip-badge { font-size: 15px; padding: 6px 14px; }
+.flip-headline { font-weight: 600; color: var(--text); }
+.flip-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 14px; margin: 8px 0 4px; }
+.flip-summary .fs { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--text-dim); padding: 4px 0; border-bottom: 1px solid var(--border-soft); }
+.flip-summary .fs b { color: var(--text); font-weight: 600; }
+.flip-summary .fs b.pos { color: var(--c-hold); }
+.flip-summary .fs b.neg { color: var(--c-cutloss); }
+#flip-result h3 { margin: 18px 0 8px; }
+.muted { color: var(--text-faint); font-size: 12.5px; }

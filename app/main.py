@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import analysis, auth, carry, db, notifications, profit, scheduler, undercut, views
+from . import analysis, auth, carry, db, flip_checker, notifications, profit, scheduler, undercut, views
 from .config import settings
 from .formatting import format_coins, format_profit, parse_coins
 
@@ -267,6 +267,23 @@ async def settings_page(request: Request):
     )
 
 
+@app.get("/flip-checker", response_class=HTMLResponse)
+async def flip_checker_page(request: Request):
+    return templates.TemplateResponse(
+        "flip_checker.html",
+        {"request": request, "settings": settings, "min_profit_default": settings.relist_min_profit_after_tax},
+    )
+
+
+@app.get("/flip-checker/history", response_class=HTMLResponse)
+async def flip_checker_history(request: Request):
+    checks = db.list_flip_checks(limit=100)
+    return templates.TemplateResponse(
+        "flip_checker_history.html",
+        {"request": request, "checks": checks, "settings": settings},
+    )
+
+
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
@@ -408,6 +425,43 @@ async def api_undercuts(uuid: str):
 async def api_sync():
     stats = await scheduler.run_once()
     return {"ok": True, "stats": stats}
+
+
+@app.post("/api/flip-check")
+async def api_flip_check(request: Request):
+    """Run a pre-buy flip analysis. Read-only / advisory; never buys anything."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    raw_input = body.get("auction_url_or_uuid") or body.get("input") or ""
+    buy_price = parse_coins(body.get("buy_price"))
+    min_profit = parse_coins(body.get("min_profit")) if body.get("min_profit") not in (None, "") else None
+    if buy_price is None:
+        return JSONResponse({"ok": False, "error": "Enter a valid buy price."}, status_code=400)
+    result = await flip_checker.check_flip(
+        auction_url_or_uuid=str(raw_input), buy_price=buy_price, min_profit=min_profit
+    )
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@app.get("/api/flip-check/{check_id}")
+async def api_get_flip_check(check_id: int):
+    row = db.get_flip_check(check_id)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    out = dict(row)
+    for key in ("reasons_json", "features_json", "comparables_json", "rejected_json", "market_context_json"):
+        if out.get(key):
+            try:
+                out[key[:-5]] = json.loads(out[key])
+            except (ValueError, TypeError):
+                out[key[:-5]] = None
+    return out
 
 
 @app.post("/api/notifications/test")

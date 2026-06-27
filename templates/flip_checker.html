@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Flip Checker · SkyCofl Relist{% endblock %}
+{% block body %}
+<div class="wrap">
+    <a class="back-link" href="/">← Back to dashboard</a>
+    <div class="topbar">
+        <div class="brand"><span class="logo">🔎</span><div>Flip Checker<small>Advisory paper-analysis · read-only market data</small></div></div>
+        <div class="topbar-actions">
+            <a class="btn ghost" href="/flip-checker/history">History</a>
+            {% if settings.login_required %}<a class="btn ghost" href="/logout">Logout</a>{% endif %}
+        </div>
+    </div>
+
+    <div class="panel">
+        <h3>Check a flip before you buy</h3>
+        <p style="color:var(--text-faint); font-size:12px; margin:0 0 12px">
+            Paste a SkyCofl auction URL or UUID and your buy price. The checker compares the item
+            by its real upgrades/features (never raw LBIN), nets out the {{ (settings.ah_sales_tax_rate*100)|round(2) }}%
+            sales tax and {{ (settings.ah_listing_fee_rate*100)|round(2) }}% listing fee, and tells you if it is worth buying.
+        </p>
+        <div class="input-group">
+            <label for="flip-input">SkyCofl auction URL or UUID</label>
+            <input class="coin-input" id="flip-input" type="text" placeholder="https://sky.coflnet.com/auction/… or a UUID">
+        </div>
+        <div class="input-group">
+            <label for="flip-buy">Buy price</label>
+            <input class="coin-input" id="flip-buy" type="text" inputmode="numeric" placeholder="e.g. 200,000,000 or 200m">
+        </div>
+        <div class="input-group">
+            <label for="flip-min">Desired minimum true profit (optional)</label>
+            <input class="coin-input" id="flip-min" type="text" inputmode="numeric" placeholder="default {{ min_profit_default | coins }}">
+        </div>
+        <button class="btn primary" onclick="runFlipCheck(this)">Check flip</button>
+        <div id="flip-error" class="missing-note" style="display:none; margin-top:12px"></div>
+    </div>
+
+    <div id="flip-result"></div>
+
+    <div class="safety">
+        🔒 Advisory only. This reads public market data and does the math — it never logs into Hypixel
+        and never buys, lists, or cancels anything. Every decision is yours.
+    </div>
+</div>
+{% endblock %}
