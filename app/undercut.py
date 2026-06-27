@@ -409,6 +409,14 @@ async def check_auction(uuid: str, *, notify: bool = False) -> Dict[str, Any]:
             notified=notified,
         )
 
+    notifications.log_notification_decision(
+        "undercut",
+        uuid,
+        row["item_name"] or row["item_tag"],
+        alert_type_enabled=settings.undercut_alerts,
+        skipped_cooldown=cooldown,
+        sent=notified,
+    )
     return _result_payload(uuid, match, alert_id, notified, cooldown)
 
 

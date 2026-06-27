@@ -242,6 +242,10 @@ async def settings_page(request: Request):
         "alert_cooldown_minutes": settings.relist_alert_cooldown_minutes,
         "sold_alerts": settings.sold_alerts,
         "relist_alerts": settings.relist_alerts,
+        "undercut_alerts": settings.undercut_alerts,
+        "startup_message": settings.startup_message,
+        "first_sync_suppress_sold_alerts": settings.first_sync_suppress_sold_alerts,
+        "database_path": settings.database_path,
         "last_run": scheduler.last_run,
         "last_stats": scheduler.last_stats,
     }
@@ -391,6 +395,18 @@ async def api_undercuts(uuid: str):
 async def api_sync():
     stats = await scheduler.run_once()
     return {"ok": True, "stats": stats}
+
+
+@app.post("/api/notifications/test")
+async def api_test_notification():
+    """Send a test notification through the real notification system.
+
+    Requires normal dashboard auth (enforced by the auth middleware for /api).
+    Returns a secret-free diagnostics payload proving whether this service can
+    reach Discord / Pushover and which alert toggles are active.
+    """
+    result = await notifications.send_test_notification()
+    return result
 
 
 @app.post("/api/auctions/{uuid}/ignore")

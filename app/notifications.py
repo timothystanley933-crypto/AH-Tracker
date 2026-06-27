@@ -23,6 +23,40 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def log_notification_decision(
+    notif_type: str,
+    auction_uuid: Optional[str],
+    item_name: Optional[str],
+    *,
+    alert_type_enabled: bool,
+    skipped_first_sync: bool = False,
+    skipped_cooldown: bool = False,
+    sent: bool = False,
+) -> None:
+    """One structured, secret-free log line explaining why an alert fired or not.
+
+    Emitted for sold / relist / undercut alerts so the Railway logs make it
+    obvious which gate stopped a notification (master switch, alert toggle,
+    missing channel, first-sync suppression, or cooldown/dedup).
+    """
+    log.info(
+        "notify type=%s auction_uuid=%s item_name=%r notifications_enabled=%s "
+        "%s_alerts=%s pushover_configured=%s discord_configured=%s "
+        "skipped_first_sync=%s skipped_cooldown=%s sent=%s",
+        notif_type,
+        auction_uuid,
+        item_name,
+        settings.notifications_enabled,
+        notif_type,
+        alert_type_enabled,
+        settings.pushover_configured,
+        settings.discord_configured,
+        skipped_first_sync,
+        skipped_cooldown,
+        sent,
+    )
+
+
 async def _send_discord(title: str, body: str) -> bool:
     if not settings.discord_configured:
         return False
@@ -84,11 +118,13 @@ def _within_cooldown(uuid: str, decision: Optional[str], minutes: int) -> bool:
 # --------------------------------------------------------------------------
 
 async def notify_sold(auction_row, sold_price: Optional[int], sold_time: Optional[str] = None) -> bool:
-    if not settings.notifications_enabled or not settings.sold_alerts:
-        return False
-
     uuid = auction_row["auction_uuid"]
     name = auction_row["item_name"] or auction_row["item_tag"] or "Item"
+
+    if not settings.notifications_enabled or not settings.sold_alerts:
+        log_notification_decision("sold", uuid, name, alert_type_enabled=settings.sold_alerts)
+        return False
+
     buy_cost = auction_row["buy_cost"]
     url = settings.auction_url(uuid)
 
@@ -112,10 +148,14 @@ async def notify_sold(auction_row, sold_price: Optional[int], sold_time: Optiona
     # Avoid double-sending the same sale.
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     if db.message_hash_exists(mh, since):
+        log_notification_decision(
+            "sold", uuid, name, alert_type_enabled=settings.sold_alerts, skipped_cooldown=True
+        )
         return False
 
     ok = await send_raw("💰 AH SOLD", body, url)
     db.record_notification(uuid, "sold", "SOLD", mh)
+    log_notification_decision("sold", uuid, name, alert_type_enabled=settings.sold_alerts, sent=ok)
     return ok
 
 
@@ -134,15 +174,17 @@ _DECISION_ICON = {
 
 async def notify_decision(auction_row, result) -> bool:
     """Send a decision alert if it qualifies (decision allowed + cooldown ok)."""
+    uuid = auction_row["auction_uuid"]
+    name = auction_row["item_name"] or auction_row["item_tag"] or "Item"
+
     if not settings.notifications_enabled or not settings.relist_alerts:
+        log_notification_decision("relist", uuid, name, alert_type_enabled=settings.relist_alerts)
         return False
 
     decision = result.decision
     if decision not in settings.relist_alert_decisions:
         return False
 
-    uuid = auction_row["auction_uuid"]
-    name = auction_row["item_name"] or auction_row["item_tag"] or "Item"
     listing_price = auction_row["listing_price"] or 0
     buy_cost = auction_row["buy_cost"]
     url = settings.auction_url(uuid)
@@ -154,6 +196,9 @@ async def notify_decision(auction_row, result) -> bool:
             return False
 
     if _within_cooldown(uuid, decision, settings.relist_alert_cooldown_minutes):
+        log_notification_decision(
+            "relist", uuid, name, alert_type_enabled=settings.relist_alerts, skipped_cooldown=True
+        )
         return False
 
     icon = _DECISION_ICON.get(decision, "ℹ️")
@@ -191,10 +236,14 @@ async def notify_decision(auction_row, result) -> bool:
 
     since = (datetime.now(timezone.utc) - timedelta(minutes=settings.relist_alert_cooldown_minutes)).isoformat()
     if db.message_hash_exists(mh, since):
+        log_notification_decision(
+            "relist", uuid, name, alert_type_enabled=settings.relist_alerts, skipped_cooldown=True
+        )
         return False
 
     ok = await send_raw(title, body, url)
     db.record_notification(uuid, "relist", decision, mh)
+    log_notification_decision("relist", uuid, name, alert_type_enabled=settings.relist_alerts, sent=ok)
     return ok
 
 
@@ -208,3 +257,95 @@ async def send_startup_message() -> None:
         "Monitoring your auctions for sales and smart relist opportunities.\n"
         "Advisory only - all actions remain manual.",
     )
+
+
+# --------------------------------------------------------------------------
+# Diagnostics (no secrets ever leave this function)
+# --------------------------------------------------------------------------
+
+def diagnostics() -> dict:
+    """Secret-free snapshot of notification config + scheduler state.
+
+    Safe to render in templates or return from the API: only booleans,
+    non-secret config values, and the last scheduler run/stats. The Discord
+    webhook and Pushover keys themselves are NEVER included.
+    """
+    from . import scheduler  # local import avoids a circular import at module load
+
+    return {
+        "notifications_enabled": settings.notifications_enabled,
+        "sold_alerts": settings.sold_alerts,
+        "relist_alerts": settings.relist_alerts,
+        "undercut_alerts": settings.undercut_alerts,
+        "startup_message": settings.startup_message,
+        "first_sync_suppress_sold_alerts": settings.first_sync_suppress_sold_alerts,
+        "discord_configured": settings.discord_configured,
+        "pushover_configured": settings.pushover_configured,
+        "database_path": settings.database_path,
+        "check_interval_seconds": settings.check_interval_seconds,
+        "last_run": scheduler.last_run,
+        "last_stats": scheduler.last_stats,
+    }
+
+
+async def send_test_notification() -> dict:
+    """Send a test notification through the same channels used by real alerts.
+
+    Never raises. Returns a structured, secret-free dict describing exactly what
+    happened so a user can prove whether this service (e.g. running on Railway)
+    can actually reach Discord / Pushover, and which alert toggles are active.
+    """
+    result = {
+        "notifications_enabled": settings.notifications_enabled,
+        "sold_alerts": settings.sold_alerts,
+        "relist_alerts": settings.relist_alerts,
+        "undercut_alerts": settings.undercut_alerts,
+        "discord_configured": settings.discord_configured,
+        "pushover_configured": settings.pushover_configured,
+        "sent_discord": False,
+        "sent_pushover": False,
+        "errors": [],
+    }
+
+    if not settings.notifications_enabled:
+        result["errors"].append("NOTIFICATIONS_ENABLED is false; no notification sent.")
+        log_notification_decision("test", None, "test notification", alert_type_enabled=False)
+        return result
+
+    if not (settings.discord_configured or settings.pushover_configured):
+        result["errors"].append("No notification channel configured (Discord or Pushover).")
+        log_notification_decision("test", None, "test notification", alert_type_enabled=True)
+        return result
+
+    title = "🔔 SkyCofl test notification"
+    body = (
+        "Test notification from your SkyCofl dashboard.\n"
+        "If you can read this, the service can reach this channel."
+    )
+
+    if settings.discord_configured:
+        try:
+            ok = await _send_discord(title, body)
+            result["sent_discord"] = ok
+            if not ok:
+                result["errors"].append("Discord did not accept the message.")
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"Discord error: {type(exc).__name__}")
+
+    if settings.pushover_configured:
+        try:
+            ok = await _send_pushover(title, body)
+            result["sent_pushover"] = ok
+            if not ok:
+                result["errors"].append("Pushover did not accept the message.")
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"Pushover error: {type(exc).__name__}")
+
+    log_notification_decision(
+        "test",
+        None,
+        "test notification",
+        alert_type_enabled=True,
+        sent=bool(result["sent_discord"] or result["sent_pushover"]),
+    )
+    return result

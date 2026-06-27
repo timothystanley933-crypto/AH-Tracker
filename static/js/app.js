@@ -184,6 +184,43 @@ async function saveNotes(uuid, el) {
     }
 }
 
+async function sendTestNotification(el) {
+    const box = document.getElementById('test-notif-result');
+    busy(el, true, 'Sending…');
+    try {
+        const data = await postJSON('/api/notifications/test', {});
+        const channels = [];
+        if (data.discord_configured) channels.push('Discord ' + (data.sent_discord ? '✅ sent' : '❌ failed'));
+        if (data.pushover_configured) channels.push('Pushover ' + (data.sent_pushover ? '✅ sent' : '❌ failed'));
+        const sentAny = data.sent_discord || data.sent_pushover;
+        const errs = (data.errors && data.errors.length) ? data.errors.join(' · ') : '';
+        let summary;
+        if (sentAny) {
+            summary = 'Test notification sent — ' + channels.join(', ');
+        } else if (!data.notifications_enabled) {
+            summary = 'Not sent: notifications are disabled (NOTIFICATIONS_ENABLED=false).';
+        } else if (!data.discord_configured && !data.pushover_configured) {
+            summary = 'Not sent: no Discord or Pushover channel is configured.';
+        } else {
+            summary = 'Send failed — ' + (channels.join(', ') || 'no channel responded');
+        }
+        if (errs) summary += '  (' + errs + ')';
+        if (box) {
+            box.style.display = '';
+            box.innerHTML = '<span class="k">Result</span><span class="v">' + summary + '</span>';
+        }
+        showToast(sentAny ? 'Test notification sent' : 'Test notification not sent', sentAny ? 'ok' : 'err');
+    } catch (e) {
+        if (box) {
+            box.style.display = '';
+            box.innerHTML = '<span class="k">Result</span><span class="v">Request failed: ' + e.message + '</span>';
+        }
+        showToast('Test failed: ' + e.message, 'err');
+    } finally {
+        busy(el, false);
+    }
+}
+
 async function syncNow(el) {
     busy(el, true, 'Syncing…');
     try {

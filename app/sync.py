@@ -226,6 +226,16 @@ async def sync_player_auctions() -> Dict[str, int]:
                         ok = await notifications.notify_sold(fresh, f["highest"], ends_iso)
                         if ok:
                             stats["notified"] += 1
+                else:
+                    # Make it explicit in the logs why an observed sale did not alert
+                    # (most commonly: first-sync suppression of pre-existing sales).
+                    notifications.log_notification_decision(
+                        "sold",
+                        f["uuid"],
+                        f["name"] or f["tag"],
+                        alert_type_enabled=settings.sold_alerts,
+                        skipped_first_sync=first_sync_block,
+                    )
 
             else:  # EXPIRED
                 db.upsert_synced(

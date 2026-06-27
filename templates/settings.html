@@ -52,6 +52,57 @@
         </div>
     </div>
 
+    <div class="panel" style="margin-top:16px">
+        <h3>Notification diagnostics</h3>
+        <p style="color:var(--text-faint); font-size:12px; margin:0 0 12px">
+            Live view of the env flags that gate sold / relist / undercut alerts. Use this to
+            confirm what the running service (e.g. on Railway) actually sees. No secret values shown.
+        </p>
+        <div class="detail-grid">
+            <div>
+                <div class="kv"><span class="k">NOTIFICATIONS_ENABLED</span><span class="v">{{ '✅ true' if info.notifications_enabled else '❌ false' }}</span></div>
+                <div class="kv"><span class="k">SOLD_ALERTS</span><span class="v">{{ '✅ true' if info.sold_alerts else '❌ false' }}</span></div>
+                <div class="kv"><span class="k">RELIST_ALERTS</span><span class="v">{{ '✅ true' if info.relist_alerts else '❌ false' }}</span></div>
+                <div class="kv"><span class="k">UNDERCUT_ALERTS</span><span class="v">{{ '✅ true' if info.undercut_alerts else '❌ false' }}</span></div>
+                <div class="kv"><span class="k">STARTUP_MESSAGE</span><span class="v">{{ '✅ true' if info.startup_message else '❌ false' }}</span></div>
+                <div class="kv"><span class="k">FIRST_SYNC_SUPPRESS_SOLD_ALERTS</span><span class="v">{{ '✅ true' if info.first_sync_suppress_sold_alerts else '❌ false' }}</span></div>
+            </div>
+            <div>
+                <div class="kv"><span class="k">Discord configured</span><span class="v">{{ '✅ yes' if info.discord_configured else '❌ no' }}</span></div>
+                <div class="kv"><span class="k">Pushover configured</span><span class="v">{{ '✅ yes' if info.pushover_configured else '❌ no' }}</span></div>
+                <div class="kv"><span class="k">DATABASE_PATH</span><span class="v">{{ info.database_path }}</span></div>
+                <div class="kv"><span class="k">CHECK_INTERVAL_SECONDS</span><span class="v">{{ info.check_interval_seconds }}</span></div>
+                <div class="kv"><span class="k">Last scheduler run</span><span class="v">{{ info.last_run[:19].replace('T',' ') if info.last_run else 'never' }}</span></div>
+            </div>
+        </div>
+
+        {% if info.last_stats %}
+        <h3 style="margin-top:16px">Last sync stats</h3>
+        {% set synced = info.last_stats.get('synced', {}) %}
+        <div class="detail-grid">
+            <div>
+                <div class="kv"><span class="k">Seen</span><span class="v">{{ synced.get('seen', 0) }}</span></div>
+                <div class="kv"><span class="k">Active</span><span class="v">{{ synced.get('active', 0) }}</span></div>
+                <div class="kv"><span class="k">Sold detected</span><span class="v">{{ synced.get('sold', 0) }}</span></div>
+                <div class="kv"><span class="k">Sold notified</span><span class="v">{{ synced.get('notified', 0) }}</span></div>
+            </div>
+            <div>
+                <div class="kv"><span class="k">Analysed</span><span class="v">{{ info.last_stats.get('analysed', 0) }}</span></div>
+                <div class="kv"><span class="k">Relist alerts</span><span class="v">{{ info.last_stats.get('alerts', 0) }}</span></div>
+                <div class="kv"><span class="k">Undercut alerts</span><span class="v">{{ info.last_stats.get('undercut_alerts', 0) }}</span></div>
+                <div class="kv"><span class="k">Errors</span><span class="v">{{ info.last_stats.get('errors', 0) }}</span></div>
+            </div>
+        </div>
+        {% else %}
+        <p style="color:var(--text-faint); font-size:12px">No sync has completed yet this run.</p>
+        {% endif %}
+
+        <div style="margin-top:16px">
+            <button class="btn" type="button" onclick="sendTestNotification(this)">Send test notification</button>
+            <div id="test-notif-result" class="kv" style="display:none; margin-top:12px"></div>
+        </div>
+    </div>
+
     <div class="safety">
         To change any setting, edit your <code>.env</code> file (or Railway variables) and restart the app.
     </div>
