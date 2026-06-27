@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 from . import carry, cofl_client, db, notifications
 from .config import settings
+from .features import build_item_identity_key
 
 log = logging.getLogger("sync")
 
@@ -190,6 +191,15 @@ async def sync_player_auctions() -> Dict[str, int]:
                     ends_at=ends_iso, sync_id=sync_id,
                     notification_eligible=1, sold_notified=0,
                 )
+                # Record the one-time initial listing fee (idempotent) so true
+                # profit can deduct it. first_seen_listing_price is stored too.
+                try:
+                    identity = build_item_identity_key(
+                        {"item_tag": f["tag"], "item_name": f["name"]}
+                    )
+                    db.record_initial_list_fee(f["uuid"], f["starting"], identity)
+                except Exception as exc:  # noqa: BLE001 - fees must never crash sync
+                    log.warning("initial listing fee failed for %s: %s", f["uuid"], exc)
                 stats["active"] += 1
                 active_uuids.append(f["uuid"])
 

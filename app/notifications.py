@@ -12,7 +12,7 @@ from typing import List, Optional
 
 import httpx
 
-from . import db
+from . import db, profit
 from .config import settings
 from .formatting import format_coins, format_profit
 
@@ -134,9 +134,9 @@ async def notify_sold(auction_row, sold_price: Optional[int], sold_time: Optiona
     if buy_cost is not None:
         lines.append(f"Bought for: {format_coins(buy_cost)}")
         if sold_price:
-            tax = sold_price * settings.ah_tax_rate
-            profit = int(round(sold_price - tax - buy_cost))
-            lines.append(f"Profit after tax: {format_profit(profit)}")
+            # True profit nets out sales tax AND every listing fee already paid.
+            for extra in profit.fee_aware_lines(auction_row, sale_price=sold_price):
+                lines.append(extra)
     if sold_time:
         lines.append(f"Time sold: {sold_time}")
     lines.append("")
@@ -215,8 +215,11 @@ async def notify_decision(auction_row, result) -> bool:
             lines.append(f"Suggested: {format_coins(result.suggested_price)}")
         if buy_cost is not None:
             lines.append(f"Bought: {format_coins(buy_cost)}")
-        if result.expected_profit is not None:
-            lines.append(f"Profit after tax: {format_profit(result.expected_profit)}")
+            # Fee-aware true profit (sales tax + every listing fee already paid).
+            for extra in profit.fee_aware_lines(
+                auction_row, sale_price=listing_price, relist_price=result.suggested_price
+            ):
+                lines.append(extra)
         lines.append(f"Comparables: {result.comparable_count}")
         lines.append(f"Confidence: {result.confidence}%")
         top = [format_coins(c.price) for c in result.comparables[:3]]

@@ -221,6 +221,68 @@ async function sendTestNotification(el) {
     }
 }
 
+async function addManualFee(uuid, el) {
+    const input = document.getElementById('manfee-' + uuid);
+    const value = input ? input.value : '';
+    busy(el, true, 'Adding…');
+    try {
+        await postJSON('/api/auctions/' + uuid + '/fees/manual-fee', { value });
+        showToast('Manual listing fee added', 'ok');
+        setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+        busy(el, false);
+        showToast('Failed: ' + e.message, 'err');
+    }
+}
+
+async function addExtraCost(uuid, el) {
+    const input = document.getElementById('extracost-' + uuid);
+    const value = input ? input.value : '';
+    busy(el, true, 'Adding…');
+    try {
+        await postJSON('/api/auctions/' + uuid + '/fees/extra-cost', { value });
+        showToast('Extra cost added', 'ok');
+        setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+        busy(el, false);
+        showToast('Failed: ' + e.message, 'err');
+    }
+}
+
+async function resetFees(uuid, el) {
+    if (!confirm('Reset the fee ledger for this item? This clears all recorded listing fees, relist count and manual costs.')) return;
+    busy(el, true, 'Resetting…');
+    try {
+        await postJSON('/api/auctions/' + uuid + '/fees/reset', {});
+        showToast('Fee ledger reset', 'ok');
+        setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+        busy(el, false);
+        showToast('Failed: ' + e.message, 'err');
+    }
+}
+
+async function viewFeeBreakdown(uuid, el) {
+    busy(el, true, 'Loading…');
+    try {
+        const d = await getJSON('/api/auctions/' + uuid + '/fees');
+        const b = d.breakdown_current || {};
+        const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString());
+        const msg =
+            'Fee breakdown\n' +
+            '— Relists counted: ' + (d.relist_count || 0) + '\n' +
+            '— Listing fees paid: ' + fmt(d.accumulated_listing_fees) + '\n' +
+            '— Manual extra costs: ' + fmt(d.manual_extra_costs) + '\n' +
+            '— Sales tax: ' + (d.sales_tax_rate * 100) + '%  ·  Listing fee: ' + (d.listing_fee_rate * 100) + '%\n' +
+            '— Profit if current sells: ' + fmt(b.true_profit);
+        alert(msg);
+        busy(el, false);
+    } catch (e) {
+        busy(el, false);
+        showToast('Failed: ' + e.message, 'err');
+    }
+}
+
 async function syncNow(el) {
     busy(el, true, 'Syncing…');
     try {

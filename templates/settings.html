@@ -41,7 +41,8 @@
 
         <div class="panel">
             <h3>Economics</h3>
-            <div class="kv"><span class="k">AH tax rate</span><span class="v">{{ (info.ah_tax_rate * 100) }}%</span></div>
+            <div class="kv"><span class="k">Sales tax rate</span><span class="v">{{ (info.ah_sales_tax_rate * 100) }}%</span></div>
+            <div class="kv"><span class="k">Listing fee rate</span><span class="v">{{ (info.ah_listing_fee_rate * 100) }}%</span></div>
             <div class="kv"><span class="k">Default min profit</span><span class="v">{{ info.min_profit_after_tax | coins }}</span></div>
             {% if info.last_stats %}
             <h3 style="margin-top:16px">Last cycle</h3>

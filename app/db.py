@@ -114,6 +114,20 @@ def init_db() -> None:
                 accepted_at       TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS auction_fee_events (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                auction_uuid            TEXT NOT NULL,
+                item_identity_key       TEXT,
+                event_type              TEXT NOT NULL,
+                listed_price            INTEGER,
+                fee_rate                REAL,
+                fee_amount              INTEGER,
+                source_old_auction_uuid TEXT,
+                source_new_auction_uuid TEXT,
+                notes                   TEXT,
+                created_at              DATETIME
+            );
+
             CREATE TABLE IF NOT EXISTS undercut_alerts (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 auction_uuid        TEXT NOT NULL,
@@ -137,6 +151,8 @@ def init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_relink_pair ON relist_links(old_auction_uuid, new_auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_undercut_uuid ON undercut_alerts(auction_uuid);
             CREATE INDEX IF NOT EXISTS idx_undercut_hash ON undercut_alerts(notification_hash);
+            CREATE INDEX IF NOT EXISTS idx_fee_uuid ON auction_fee_events(auction_uuid);
+            CREATE INDEX IF NOT EXISTS idx_fee_identity ON auction_fee_events(item_identity_key);
             """
         )
 
@@ -177,6 +193,19 @@ def _migrate() -> None:
             conn.execute("ALTER TABLE tracked_auctions ADD COLUMN carried_from_uuid TEXT")
         if "carry_suggestion_ignored" not in cols:
             conn.execute("ALTER TABLE tracked_auctions ADD COLUMN carry_suggestion_ignored INTEGER DEFAULT 0")
+        # Fee / relist ledger columns (multi-relist profit tracking).
+        if "relist_count" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN relist_count INTEGER DEFAULT 0")
+        if "accumulated_listing_fees" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN accumulated_listing_fees INTEGER DEFAULT 0")
+        if "manual_extra_costs" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN manual_extra_costs INTEGER DEFAULT 0")
+        if "first_seen_listing_price" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN first_seen_listing_price INTEGER")
+        if "last_relist_price" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN last_relist_price INTEGER")
+        if "item_identity_key" not in cols:
+            conn.execute("ALTER TABLE tracked_auctions ADD COLUMN item_identity_key TEXT")
         # relist_links is created by init_db's CREATE TABLE IF NOT EXISTS.
         acols = {row["name"] for row in conn.execute("PRAGMA table_info(auction_analysis)")}
         if "rejected_json" not in acols:
@@ -185,6 +214,8 @@ def _migrate() -> None:
             conn.execute("ALTER TABLE auction_analysis ADD COLUMN sell_estimate_json TEXT")
         if "market_context_json" not in acols:
             conn.execute("ALTER TABLE auction_analysis ADD COLUMN market_context_json TEXT")
+        if "decision_support_json" not in acols:
+            conn.execute("ALTER TABLE auction_analysis ADD COLUMN decision_support_json TEXT")
 
 
 # --------------------------------------------------------------------------
@@ -386,6 +417,266 @@ def mark_sold(uuid: str, sold_price: Optional[int] = None) -> None:
 
 
 # --------------------------------------------------------------------------
+# auction_fee_events  (multi-relist fee / profit ledger)
+# --------------------------------------------------------------------------
+
+# Event types that count as listing fees and roll up into accumulated_listing_fees.
+# Manual *extra costs* are NOT listing fees - they live in their own column.
+LISTING_FEE_EVENT_TYPES = ("INITIAL_LIST", "RELIST", "MANUAL_FEE", "CARRY_FROM_PREVIOUS")
+
+
+def _listing_fee(price: Optional[int]) -> int:
+    """Up-front listing fee for a price. Single source of truth lives in profit.py."""
+    from .profit import listing_fee  # local import avoids a circular import
+
+    return listing_fee(price)
+
+
+def _recompute_accumulated(conn: sqlite3.Connection, uuid: str) -> int:
+    placeholders = ",".join("?" for _ in LISTING_FEE_EVENT_TYPES)
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(fee_amount), 0) AS total
+              FROM auction_fee_events
+             WHERE auction_uuid = ? AND event_type IN ({placeholders})""",
+        (uuid, *LISTING_FEE_EVENT_TYPES),
+    ).fetchone()
+    total = int(row["total"] or 0)
+    conn.execute(
+        "UPDATE tracked_auctions SET accumulated_listing_fees = ?, updated_at = ? WHERE auction_uuid = ?",
+        (total, utcnow(), uuid),
+    )
+    return total
+
+
+def add_fee_event(
+    auction_uuid: str,
+    event_type: str,
+    *,
+    listed_price: Optional[int] = None,
+    fee_rate: Optional[float] = None,
+    fee_amount: Optional[int] = None,
+    source_old: Optional[str] = None,
+    source_new: Optional[str] = None,
+    item_identity_key: Optional[str] = None,
+    notes: Optional[str] = None,
+    dedup: bool = True,
+) -> bool:
+    """Insert a fee event (deduped) and recompute the auction's accumulated fees.
+
+    With ``dedup`` (the default) an event matching the same
+    auction_uuid/event_type/listed_price/source link is NOT inserted again, so
+    repeated syncs or a re-accepted carry never double-count a fee. Returns True
+    when a new row was actually inserted.
+    """
+    created = False
+    with get_conn() as conn:
+        existing = None
+        if dedup:
+            existing = conn.execute(
+                """
+                SELECT id FROM auction_fee_events
+                 WHERE auction_uuid = ? AND event_type = ?
+                   AND IFNULL(listed_price, -1) = IFNULL(?, -1)
+                   AND IFNULL(source_old_auction_uuid, '') = IFNULL(?, '')
+                   AND IFNULL(source_new_auction_uuid, '') = IFNULL(?, '')
+                 LIMIT 1
+                """,
+                (auction_uuid, event_type, listed_price, source_old, source_new),
+            ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO auction_fee_events
+                    (auction_uuid, item_identity_key, event_type, listed_price,
+                     fee_rate, fee_amount, source_old_auction_uuid, source_new_auction_uuid,
+                     notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    auction_uuid, item_identity_key, event_type, listed_price,
+                    fee_rate, fee_amount, source_old, source_new, notes, utcnow(),
+                ),
+            )
+            created = True
+        _recompute_accumulated(conn, auction_uuid)
+    return created
+
+
+def total_listing_fees_for_auction(uuid: str) -> int:
+    """Authoritative sum of listing-fee events for an auction (from the ledger)."""
+    placeholders = ",".join("?" for _ in LISTING_FEE_EVENT_TYPES)
+    with get_conn() as conn:
+        row = conn.execute(
+            f"""SELECT COALESCE(SUM(fee_amount), 0) AS total
+                  FROM auction_fee_events
+                 WHERE auction_uuid = ? AND event_type IN ({placeholders})""",
+            (uuid, *LISTING_FEE_EVENT_TYPES),
+        ).fetchone()
+        return int(row["total"] or 0)
+
+
+def fee_events_for(uuid: str, limit: int = 100) -> List[sqlite3.Row]:
+    with get_conn() as conn:
+        return list(
+            conn.execute(
+                "SELECT * FROM auction_fee_events WHERE auction_uuid = ? ORDER BY id ASC LIMIT ?",
+                (uuid, limit),
+            ).fetchall()
+        )
+
+
+def _set_listing_meta(uuid: str, listing_price: Optional[int], identity: Optional[str]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE tracked_auctions
+               SET first_seen_listing_price = COALESCE(first_seen_listing_price, ?),
+                   item_identity_key = COALESCE(item_identity_key, ?),
+                   updated_at = ?
+             WHERE auction_uuid = ?
+            """,
+            (listing_price, identity, utcnow(), uuid),
+        )
+
+
+def record_initial_list_fee(
+    uuid: str, listing_price: Optional[int], item_identity_key: Optional[str] = None
+) -> bool:
+    """Record the one-time INITIAL_LIST fee when an auction is first tracked active.
+
+    Idempotent: at most one INITIAL_LIST event per auction, so repeated syncs
+    never duplicate it. Also stores first_seen_listing_price / item_identity_key.
+    """
+    if not listing_price or listing_price <= 0:
+        _set_listing_meta(uuid, listing_price, item_identity_key)
+        return False
+    with get_conn() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM auction_fee_events WHERE auction_uuid = ? AND event_type = 'INITIAL_LIST' LIMIT 1",
+            (uuid,),
+        ).fetchone()
+    if exists:
+        _set_listing_meta(uuid, listing_price, item_identity_key)
+        return False
+    add_fee_event(
+        uuid, "INITIAL_LIST",
+        listed_price=listing_price, fee_rate=settings.ah_listing_fee_rate,
+        fee_amount=_listing_fee(listing_price), source_new=uuid,
+        item_identity_key=item_identity_key,
+    )
+    _set_listing_meta(uuid, listing_price, item_identity_key)
+    return True
+
+
+def record_relist_fee(
+    new_uuid: str,
+    old_uuid: str,
+    new_listing_price: Optional[int],
+    item_identity_key: Optional[str] = None,
+) -> bool:
+    """Record a RELIST when buy cost is carried from old_uuid to new_uuid.
+
+    The new listing IS the relist, so any INITIAL_LIST already recorded for the
+    new auction is replaced by a RELIST event (its fee is counted exactly once).
+    The previous listing's accumulated fees are carried across via a single
+    CARRY_FROM_PREVIOUS event. All inserts are deduped, so accepting the same
+    carry twice (or a page reload) never double-counts. Increments relist_count
+    only when a new RELIST event was actually created. Returns that flag.
+    """
+    old_accumulated = total_listing_fees_for_auction(old_uuid)
+    new_fee = _listing_fee(new_listing_price) if new_listing_price else 0
+    old_row = get_auction(old_uuid)
+    old_relist_count = (
+        int(old_row["relist_count"] or 0)
+        if old_row is not None and "relist_count" in old_row.keys() else 0
+    )
+
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM auction_fee_events WHERE auction_uuid = ? AND event_type = 'INITIAL_LIST'",
+            (new_uuid,),
+        )
+
+    relist_created = add_fee_event(
+        new_uuid, "RELIST",
+        listed_price=new_listing_price, fee_rate=settings.ah_listing_fee_rate,
+        fee_amount=new_fee, source_old=old_uuid, source_new=new_uuid,
+        item_identity_key=item_identity_key,
+    )
+    add_fee_event(
+        new_uuid, "CARRY_FROM_PREVIOUS",
+        listed_price=None, fee_rate=None, fee_amount=old_accumulated,
+        source_old=old_uuid, source_new=new_uuid, item_identity_key=item_identity_key,
+        notes=f"Carried {old_accumulated} in prior listing fees from {old_uuid}",
+    )
+
+    if relist_created:
+        # Relist count is cumulative across the whole relist chain.
+        with get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE tracked_auctions
+                   SET relist_count = ?,
+                       last_relist_price = ?,
+                       carried_from_uuid = COALESCE(carried_from_uuid, ?),
+                       item_identity_key = COALESCE(item_identity_key, ?),
+                       updated_at = ?
+                 WHERE auction_uuid = ?
+                """,
+                (old_relist_count + 1, new_listing_price, old_uuid, item_identity_key, utcnow(), new_uuid),
+            )
+    return relist_created
+
+
+def add_manual_listing_fee(uuid: str, amount: int, notes: Optional[str] = None) -> bool:
+    """User-entered listing fee. Always recorded (never deduped against itself)."""
+    if amount is None or int(amount) <= 0:
+        return False
+    return add_fee_event(
+        uuid, "MANUAL_FEE", fee_amount=int(amount), source_new=uuid,
+        notes=notes or "Manual listing fee", dedup=False,
+    )
+
+
+def add_manual_extra_cost(uuid: str, amount: int) -> bool:
+    """User-entered extra cost (not a listing fee). Tracked in its own column."""
+    if amount is None:
+        return False
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tracked_auctions SET manual_extra_costs = COALESCE(manual_extra_costs, 0) + ?, updated_at = ? WHERE auction_uuid = ?",
+            (int(amount), utcnow(), uuid),
+        )
+    return True
+
+
+def reset_fee_ledger(uuid: str) -> None:
+    """Wipe the fee ledger for an auction and zero the derived columns."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM auction_fee_events WHERE auction_uuid = ?", (uuid,))
+        conn.execute(
+            """
+            UPDATE tracked_auctions
+               SET accumulated_listing_fees = 0, relist_count = 0,
+                   manual_extra_costs = 0, last_relist_price = NULL, updated_at = ?
+             WHERE auction_uuid = ?
+            """,
+            (utcnow(), uuid),
+        )
+
+
+def set_item_identity_key(uuid: str, identity: Optional[str]) -> None:
+    """Set the cross-relist identity key (latest analysis wins / refines it)."""
+    if not identity:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tracked_auctions SET item_identity_key = ?, updated_at = ? WHERE auction_uuid = ?",
+            (identity, utcnow(), uuid),
+        )
+
+
+# --------------------------------------------------------------------------
 # auction_analysis
 # --------------------------------------------------------------------------
 
@@ -397,8 +688,8 @@ def insert_analysis(row: Dict[str, Any]) -> int:
                 (auction_uuid, decision, suggested_price, expected_profit, confidence,
                  comparable_count, comparable_prices_json, reasons_json, item_features_json,
                  trend_json, rejected_json, volume_per_day, sell_estimate_json,
-                 market_context_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 market_context_json, decision_support_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("auction_uuid"),
@@ -415,6 +706,7 @@ def insert_analysis(row: Dict[str, Any]) -> int:
                 row.get("volume_per_day"),
                 row.get("sell_estimate_json"),
                 row.get("market_context_json"),
+                row.get("decision_support_json"),
                 utcnow(),
             ),
         )

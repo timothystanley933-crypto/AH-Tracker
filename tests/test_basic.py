@@ -137,8 +137,16 @@ def test_different_tag_rejected():
 # --------------------------------------------------------------------------
 
 def test_profit_after_tax():
-    # 5,300,000 sale, 2% tax = 106,000 tax; buy 4,700,000 -> profit 494,000
-    assert profit_after_tax(5_300_000, 4_700_000) == 494_000
+    # 5,300,000 sale, 2% tax = 106,000 tax; buy 4,700,000 -> profit 494,000.
+    # Pin the rate so this formula test is independent of the configured default
+    # (sales tax now defaults to 1%).
+    from app.config import settings
+    prev = settings.ah_sales_tax_rate
+    settings.ah_sales_tax_rate = 0.02
+    try:
+        assert profit_after_tax(5_300_000, 4_700_000) == 494_000
+    finally:
+        settings.ah_sales_tax_rate = prev
 
 
 def test_min_safe_price():

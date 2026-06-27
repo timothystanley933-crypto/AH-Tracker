@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import cofl_client, db, notifications
+from . import cofl_client, db, notifications, profit
 from .config import settings
 from .features import RARITY_ORDER, extract_item_features
 from .formatting import format_coins
@@ -377,18 +377,20 @@ async def check_auction(uuid: str, *, notify: bool = False) -> Dict[str, Any]:
                 notified=False,
             )
             title = f"Undercut detected: {row['item_name'] or row['item_tag']}"
-            body = "\n".join(
-                [
-                    f"Your: {row['item_name'] or row['item_tag']} - {format_coins(my_price)}",
-                    f"Cheaper comparable: {format_coins(match.candidate_price)}",
-                    f"Gap: -{format_coins(match.gap_coins)} (-{match.gap_percent:g}%)",
-                    f"Confidence: {match.confidence}%",
-                    "",
-                    f"Reason: {match.reason}",
-                    "",
-                    settings.auction_url(uuid),
-                ]
-            )
+            relist_target = max(1, match.candidate_price - 1)
+            body_lines = [
+                f"Your price: {format_coins(my_price)}",
+                f"Cheaper comparable: {format_coins(match.candidate_price)}",
+                f"Gap: -{format_coins(match.gap_coins)} (-{match.gap_percent:g}%)",
+                f"Confidence: {match.confidence}%",
+            ]
+            # Fee-aware profit lines (true profit after sales tax + all listing fees).
+            fee_lines = profit.fee_aware_lines(row, sale_price=my_price, relist_price=relist_target)
+            if fee_lines:
+                body_lines.append("")
+                body_lines.extend(fee_lines)
+            body_lines.extend(["", f"Reason: {match.reason}", "", settings.auction_url(uuid)])
+            body = "\n".join(body_lines)
             await notifications.send_raw(title, body, settings.auction_url(uuid))
             db.mark_undercut_alert_notified(alert_id, mh)
             notified = True

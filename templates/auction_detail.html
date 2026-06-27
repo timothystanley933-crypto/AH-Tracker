@@ -45,6 +45,87 @@
             </div>
         </div>
 
+        <!-- True profit breakdown -->
+        <div class="panel">
+            <h3>True profit breakdown</h3>
+            {% if card.buy_cost is not none %}
+            <p style="color:var(--text-faint); font-size:12px; margin:0 0 8px">
+                Includes listing fees + sales tax. Relist count: {{ card.relist_count }}.
+            </p>
+            <table class="tbl">
+                <thead><tr><th>Line</th><th>If current sells</th><th>If relisted</th></tr></thead>
+                <tbody>
+                <tr><td>Sale price</td><td>{{ breakdown_current.sale_price | coins }}</td><td>{{ breakdown_relist.sale_price | coins if breakdown_relist else '—' }}</td></tr>
+                <tr><td>− Buy cost</td><td>{{ breakdown_current.buy_cost | coins }}</td><td>{{ breakdown_relist.buy_cost | coins if breakdown_relist else '—' }}</td></tr>
+                <tr><td>− Sales tax ({{ card.sales_tax_pct }}%)</td><td>{{ breakdown_current.sales_tax | coins }}</td><td>{{ breakdown_relist.sales_tax | coins if breakdown_relist else '—' }}</td></tr>
+                <tr><td>− Listing fees already paid</td><td>{{ breakdown_current.listing_fees_paid | coins }}</td><td>{{ breakdown_relist.listing_fees_paid | coins if breakdown_relist else '—' }}</td></tr>
+                <tr><td>− New relist fee ({{ card.listing_fee_pct }}%)</td><td>—</td><td>{{ breakdown_relist.new_relist_fee | coins if breakdown_relist else '—' }}</td></tr>
+                <tr><td>− Manual extra costs</td><td>{{ breakdown_current.manual_extra_costs | coins }}</td><td>{{ breakdown_relist.manual_extra_costs | coins if breakdown_relist else '—' }}</td></tr>
+                <tr><td><b>= True profit</b></td>
+                    <td class="{% if breakdown_current.true_profit is not none and breakdown_current.true_profit >= 0 %}ok{% else %}bad{% endif %}"><b>{{ breakdown_current.true_profit | profit if breakdown_current.true_profit is not none else '—' }}</b></td>
+                    <td class="{% if breakdown_relist and breakdown_relist.true_profit is not none and breakdown_relist.true_profit >= 0 %}ok{% else %}bad{% endif %}"><b>{{ breakdown_relist.true_profit | profit if breakdown_relist and breakdown_relist.true_profit is not none else '—' }}</b></td>
+                </tr>
+                </tbody>
+            </table>
+            {% if card.decision_support and card.decision_support.relist_options %}
+            <h3 style="margin-top:18px">Suggested relist options</h3>
+            <table class="tbl">
+                <thead><tr><th>Option</th><th>Price</th><th>Profit after all fees</th></tr></thead>
+                <tbody>
+                {% for o in card.decision_support.relist_options %}
+                <tr><td>{{ o.name }}</td><td>{{ o.price_fmt }}</td>
+                    <td class="{% if o.profit is not none and o.profit >= 0 %}ok{% else %}bad{% endif %}">{{ o.profit_fmt }}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% else %}
+            <p style="color:var(--text-faint)">Enter a buy cost to see fee-aware profit.</p>
+            {% endif %}
+        </div>
+
+        <!-- Fee ledger -->
+        <div class="panel">
+            <h3>Fee ledger</h3>
+            <div class="kv"><span class="k">Relists counted</span><span class="v">{{ card.relist_count }}</span></div>
+            <div class="kv"><span class="k">Accumulated listing fees</span><span class="v">{{ card.listing_fees_paid_fmt }}</span></div>
+            <div class="kv"><span class="k">Manual extra costs</span><span class="v">{{ card.manual_extra_costs_fmt }}</span></div>
+            <div class="kv"><span class="k">Sales tax / Listing fee</span><span class="v">{{ card.sales_tax_pct }}% / {{ card.listing_fee_pct }}%</span></div>
+
+            {% if fee_events %}
+            <h3 style="margin-top:14px">Fee events</h3>
+            <table class="tbl">
+                <thead><tr><th>When</th><th>Type</th><th>Listed</th><th>Fee</th></tr></thead>
+                <tbody>
+                {% for e in fee_events %}
+                <tr>
+                    <td>{{ (e['created_at'] or '')[:16].replace('T',' ') }}</td>
+                    <td>{{ e['event_type'] }}</td>
+                    <td>{{ e['listed_price'] | coins if e['listed_price'] else '—' }}</td>
+                    <td>{{ e['fee_amount'] | coins if e['fee_amount'] is not none else '—' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p style="color:var(--text-faint)">No fee events recorded yet.</p>
+            {% endif %}
+
+            <h3 style="margin-top:14px">Adjust ledger</h3>
+            <div class="input-row" style="margin-bottom:8px">
+                <input class="coin-input" id="manfee-{{ card.uuid }}" type="text" inputmode="numeric" placeholder="Listing fee, e.g. 5.75m">
+                <button class="btn small" onclick="addManualFee('{{ card.uuid }}', this)">Add manual listing fee</button>
+            </div>
+            <div class="input-row" style="margin-bottom:8px">
+                <input class="coin-input" id="extracost-{{ card.uuid }}" type="text" inputmode="numeric" placeholder="Extra cost, e.g. 100k">
+                <button class="btn small" onclick="addExtraCost('{{ card.uuid }}', this)">Add manual extra cost</button>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap">
+                <button class="btn small ghost" onclick="viewFeeBreakdown('{{ card.uuid }}', this)">View fee breakdown</button>
+                <button class="btn small danger" onclick="resetFees('{{ card.uuid }}', this)">Reset fee ledger</button>
+            </div>
+        </div>
+
         <!-- Reasons -->
         <div class="panel">
             <h3>Why this decision</h3>

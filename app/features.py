@@ -361,6 +361,59 @@ def extract_item_features(auction_json: Dict[str, Any]) -> Dict[str, Any]:
     return features
 
 
+def _normalise_identity_name(name: str) -> str:
+    """Lower-case, strip colour codes/star glyphs, collapse whitespace."""
+    text = _strip_color_codes(name or "")
+    text = _STAR_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def build_item_identity_key(features: Dict[str, Any]) -> str:
+    """Stable identity for an item across relists (UUID changes, identity does not).
+
+    Built from the value-defining traits so the same item relisted under a new
+    auction UUID maps to the same key. For skins/cosmetics the item tag alone is
+    usually enough, so we keep the key deliberately coarse there.
+    """
+    f = features or {}
+    tag = str(f.get("item_tag") or "").upper()
+    parts: List[str] = [f"tag={tag}"]
+
+    name = _normalise_identity_name(str(f.get("item_name") or ""))
+
+    is_skin = "SKIN" in tag or "COSMETIC" in tag or "skin" in name
+    if is_skin:
+        # Same skin tag is enough; do not over-split on incidental name noise.
+        return "|".join(parts)
+
+    if f.get("is_pet"):
+        pet = f.get("pet") or {}
+        parts.append("pet")
+        parts.append(f"lvl={pet.get('level')}")
+        parts.append(f"tier={pet.get('tier') or f.get('rarity')}")
+        if pet.get("held_item"):
+            parts.append(f"held={pet.get('held_item')}")
+        if pet.get("skin"):
+            parts.append(f"petskin={pet.get('skin')}")
+    else:
+        parts.append(f"name={name}")
+        parts.append(f"rarity={f.get('rarity')}")
+        parts.append(f"stars={int(f.get('stars') or 0)}")
+        parts.append(f"recomb={1 if f.get('recombobulated') else 0}")
+        gems = f.get("gemstones") or {}
+        parts.append(f"gems={1 if gems.get('has_gems') else 0}")
+        attrs = f.get("attributes") or {}
+        if attrs:
+            parts.append("attr=" + ",".join(f"{k}{v}" for k, v in sorted(attrs.items())))
+        ench = f.get("important_enchants") or {}
+        if ench:
+            parts.append("ench=" + ",".join(f"{k}{v}" for k, v in sorted(ench.items())))
+        if f.get("skin"):
+            parts.append(f"skin={f.get('skin')}")
+    return "|".join(parts)
+
+
 def features_summary(features: Dict[str, Any]) -> str:
     """A short human tag line describing the item, e.g. for cards."""
     parts: List[str] = []

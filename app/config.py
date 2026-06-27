@@ -68,8 +68,26 @@ class Settings:
     pushover_sound: str = field(default_factory=lambda: _get("PUSHOVER_SOUND", "cashregister"))
     pushover_priority: int = field(default_factory=lambda: _get_int("PUSHOVER_PRIORITY", 1))
 
-    # Economics
-    ah_tax_rate: float = field(default_factory=lambda: _get_float("AH_TAX_RATE", 0.02))
+    # Economics / taxes.
+    # Two distinct charges exist on the Hypixel AH:
+    #   * sales tax   - taken from the SALE price when an item actually sells.
+    #   * listing fee - taken UP FRONT every time you list / relist an item.
+    # The new env vars are preferred. The legacy AH_TAX_RATE is still honoured as
+    # the sales-tax fallback so old configs keep working.
+    ah_sales_tax_rate: float = field(
+        default_factory=lambda: _get_float("AH_SALES_TAX_RATE", _get_float("AH_TAX_RATE", 0.01))
+    )
+    ah_listing_fee_rate: float = field(
+        default_factory=lambda: _get_float("AH_LISTING_FEE_RATE", 0.025)
+    )
+
+    # Price-wall detection: a "wall" is N+ listings clustered within X% of a price.
+    price_wall_window_percent: float = field(
+        default_factory=lambda: _get_float("PRICE_WALL_WINDOW_PERCENT", 1.0)
+    )
+    price_wall_min_listings: int = field(
+        default_factory=lambda: _get_int("PRICE_WALL_MIN_LISTINGS", 3)
+    )
 
     # Comparable engine
     relist_comparable_only: bool = field(default_factory=lambda: _get_bool("RELIST_COMPARABLE_ONLY", True))
@@ -171,6 +189,19 @@ class Settings:
     incomparable_alert_threshold: int = field(
         default_factory=lambda: _get_int("INCOMPARABLE_ALERT_THRESHOLD", 1000000)
     )
+
+    @property
+    def ah_tax_rate(self) -> float:
+        """Backward-compatible alias for the sales-tax rate.
+
+        Older code and tests refer to ``ah_tax_rate``; it now maps onto the
+        sales-tax rate. The setter is kept so tests can still pin it.
+        """
+        return self.ah_sales_tax_rate
+
+    @ah_tax_rate.setter
+    def ah_tax_rate(self, value: float) -> None:
+        self.ah_sales_tax_rate = value
 
     @property
     def login_required(self) -> bool:

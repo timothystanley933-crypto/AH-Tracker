@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import analysis, auth, carry, db, notifications, scheduler, undercut, views
+from . import analysis, auth, carry, db, notifications, profit, scheduler, undercut, views
 from .config import settings
 from .formatting import format_coins, format_profit, parse_coins
 
@@ -139,6 +139,7 @@ async def dashboard(request: Request, filter: str = "active", sort: str = "recen
         if card["missing_buy_cost"]:
             card["carry_suggestions"] = carry_suggestions.get(card["uuid"], [])
     summary = views.compute_summary(cards, scheduler.last_run)
+    urgent = views.build_urgent_actions(cards)
 
     visible = views.filter_cards(cards, filter)
     # The Sold tab always shows newest sold first, regardless of the sort dropdown.
@@ -160,6 +161,7 @@ async def dashboard(request: Request, filter: str = "active", sort: str = "recen
             "request": request,
             "cards": visible,
             "summary": summary,
+            "urgent": urgent,
             "filter": filter,
             "sort": sort,
             "settings": settings,
@@ -200,6 +202,12 @@ async def auction_detail(request: Request, uuid: str):
     notifs = db.notification_history(uuid, limit=20)
     carry_link = db.get_accepted_carry_link(uuid)
     undercut_history = db.undercut_history(uuid, limit=20)
+    fee_events = db.fee_events_for(uuid)
+    breakdown_current = profit.profit_breakdown(row, row["listing_price"], include_new_relist_fee=False)
+    breakdown_relist = (
+        profit.profit_breakdown(row, card["suggested_price"], include_new_relist_fee=True)
+        if card.get("suggested_price") else None
+    )
 
     return templates.TemplateResponse(
         "auction_detail.html",
@@ -215,6 +223,9 @@ async def auction_detail(request: Request, uuid: str):
             "notifications": notifs,
             "carry_link": carry_link,
             "undercut_history": undercut_history,
+            "fee_events": fee_events,
+            "breakdown_current": breakdown_current,
+            "breakdown_relist": breakdown_relist,
             "settings": settings,
         },
     )
@@ -231,6 +242,8 @@ async def settings_page(request: Request):
         "cofl_base_url": settings.cofl_base_url,
         "check_interval_seconds": settings.check_interval_seconds,
         "ah_tax_rate": settings.ah_tax_rate,
+        "ah_sales_tax_rate": settings.ah_sales_tax_rate,
+        "ah_listing_fee_rate": settings.ah_listing_fee_rate,
         "comparable_only": settings.relist_comparable_only,
         "comparable_pages": settings.relist_comparable_pages,
         "min_comparable_matches": settings.relist_min_comparable_matches,
@@ -438,6 +451,60 @@ async def api_sold(uuid: str, request: Request, sold_price: Optional[str] = Form
         except Exception as exc:  # noqa: BLE001
             log.warning("sold notify failed: %s", exc)
     return {"ok": True, "sold": True}
+
+
+@app.get("/api/auctions/{uuid}/fees")
+async def api_fees(uuid: str):
+    """Fee ledger + fee-aware profit breakdown for an auction."""
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    events = [dict(e) for e in db.fee_events_for(uuid)]
+    return {
+        "auction_uuid": uuid,
+        "relist_count": row["relist_count"] if "relist_count" in row.keys() else 0,
+        "accumulated_listing_fees": row["accumulated_listing_fees"] if "accumulated_listing_fees" in row.keys() else 0,
+        "manual_extra_costs": row["manual_extra_costs"] if "manual_extra_costs" in row.keys() else 0,
+        "sales_tax_rate": settings.ah_sales_tax_rate,
+        "listing_fee_rate": settings.ah_listing_fee_rate,
+        "breakdown_current": profit.profit_breakdown(row, row["listing_price"], include_new_relist_fee=False),
+        "events": events,
+    }
+
+
+@app.post("/api/auctions/{uuid}/fees/manual-fee")
+async def api_add_manual_fee(uuid: str, request: Request, value: Optional[str] = Form(None)):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    amount = parse_coins(await _read_value(request, value))
+    if amount is None or amount <= 0:
+        return JSONResponse({"error": "enter a positive fee amount"}, status_code=400)
+    db.add_manual_listing_fee(uuid, amount, notes="Manual listing fee")
+    fresh = db.get_auction(uuid)
+    return {"ok": True, "accumulated_listing_fees": fresh["accumulated_listing_fees"]}
+
+
+@app.post("/api/auctions/{uuid}/fees/extra-cost")
+async def api_add_extra_cost(uuid: str, request: Request, value: Optional[str] = Form(None)):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    amount = parse_coins(await _read_value(request, value))
+    if amount is None or amount <= 0:
+        return JSONResponse({"error": "enter a positive amount"}, status_code=400)
+    db.add_manual_extra_cost(uuid, amount)
+    fresh = db.get_auction(uuid)
+    return {"ok": True, "manual_extra_costs": fresh["manual_extra_costs"]}
+
+
+@app.post("/api/auctions/{uuid}/fees/reset")
+async def api_reset_fees(uuid: str):
+    row = db.get_auction(uuid)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    db.reset_fee_ledger(uuid)
+    return {"ok": True, "reset": True}
 
 
 @app.get("/api/auctions/{uuid}/analysis")

@@ -57,10 +57,48 @@
             <div class="v suggest">{{ c.suggested_price_fmt }}</div>
         </div>
         <div class="price-block">
-            <div class="k">Profit (after tax)</div>
+            <div class="k">Profit (after fees)</div>
             <div class="v {% if c.expected_profit is not none and c.expected_profit >= 0 %}pos{% elif c.expected_profit is not none %}neg{% endif %}">{{ c.expected_profit_fmt }}</div>
         </div>
     </div>
+
+    {% if c.buy_cost is not none %}
+    <div class="profit-fees">
+        <div class="pf-row"><span>Profit if current sells</span><b class="{% if c.profit_current is not none and c.profit_current >= 0 %}pos{% elif c.profit_current is not none %}neg{% endif %}">{{ c.profit_current_fmt }}</b></div>
+        <div class="pf-row"><span>Profit after suggested relist</span><b class="{% if c.profit_relist is not none and c.profit_relist >= 0 %}pos{% elif c.profit_relist is not none %}neg{% endif %}">{{ c.profit_relist_fmt }}</b></div>
+        <div class="pf-row"><span>Relists counted</span><b>{{ c.relist_count }}</b></div>
+        <div class="pf-row"><span>Listing fees paid</span><b>{{ c.listing_fees_paid_fmt }}</b></div>
+        <div class="pf-row"><span>Next relist fee</span><b>{{ c.next_relist_fee_fmt }}</b></div>
+        {% if c.manual_extra_costs %}<div class="pf-row"><span>Manual extra costs</span><b>{{ c.manual_extra_costs_fmt }}</b></div>{% endif %}
+        <div class="pf-row muted"><span>Includes listing fees + sales tax</span><b>Tax {{ c.sales_tax_pct }}% · Fee {{ c.listing_fee_pct }}%</b></div>
+    </div>
+    {% endif %}
+
+    {% set ds = c.decision_support %}
+    {% if ds and (ds.price_rank or ds.relist_options) %}
+    <div class="ds-box">
+        {% if ds.price_rank %}
+        <div class="ds-row"><span>Price rank</span><b>#{{ ds.price_rank }} of {{ ds.price_rank_total }} ({{ ds.rank_basis }})</b></div>
+        {% endif %}
+        {% if ds.cheapest_similar %}
+        <div class="ds-row"><span>Cheapest similar</span><b>{{ ds.cheapest_similar | coins }} · undercut {{ ds.undercut_coins | coins }} (-{{ ds.undercut_percent }}%)</b></div>
+        {% endif %}
+        {% if ds.scores %}
+        <div class="ds-row"><span>Liquidity / Demand / Competition</span><b>{{ ds.scores.liquidity.label }} · {{ ds.scores.demand.label }} · {{ ds.scores.competition.label }}</b></div>
+        {% endif %}
+        {% if ds.trend_label %}<div class="ds-row"><span>Market trend</span><b>{{ ds.trend_label | title }}</b></div>{% endif %}
+        {% if ds.price_walls %}
+        <div class="ds-row"><span>Price wall</span><b>{{ ds.price_walls[0].count }} listings within {{ ds.price_walls[0].window_percent }}% of {{ ds.price_walls[0].price | coins }}</b></div>
+        {% endif %}
+        {% if ds.relist_options %}
+        <div class="ds-options">
+            {% for o in ds.relist_options %}
+            <div class="ds-opt"><span class="opt-name">{{ o.name }}</span><span class="opt-price">{{ o.price_fmt }}</span><span class="opt-profit {% if o.profit is not none and o.profit >= 0 %}pos{% elif o.profit is not none %}neg{% endif %}">{{ o.profit_fmt }}</span></div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
 
     {% if not c.sold %}
     <div class="input-group">

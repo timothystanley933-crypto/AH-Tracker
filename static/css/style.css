@@ -488,3 +488,41 @@ table.tbl td.bad { color: var(--c-cutloss); }
     .stat .value { font-size: 19px; }
     .controls { flex-direction: column; align-items: stretch; }
 }
+
+/* --- Fee-aware profit + decision support (added) --- */
+.profit-fees { margin-top: 12px; padding: 10px 12px; background: var(--card-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.pf-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 3px 0; color: var(--text-dim); }
+.pf-row b { color: var(--text); font-weight: 600; }
+.pf-row b.pos { color: var(--c-hold); }
+.pf-row b.neg { color: var(--c-cutloss); }
+.pf-row.muted, .pf-row.muted b { color: var(--text-faint); font-weight: 500; }
+
+.ds-box { margin-top: 12px; padding: 10px 12px; background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.ds-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 3px 0; color: var(--text-dim); }
+.ds-row b { color: var(--text); font-weight: 600; text-align: right; }
+.ds-options { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ds-opt { flex: 1; min-width: 90px; display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; background: var(--card); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+.ds-opt .opt-name { font-size: 11px; text-transform: uppercase; color: var(--text-faint); }
+.ds-opt .opt-price { font-weight: 700; font-size: 13px; color: var(--text); }
+.ds-opt .opt-profit { font-size: 12px; color: var(--text-dim); }
+.ds-opt .opt-profit.pos { color: var(--c-hold); }
+.ds-opt .opt-profit.neg { color: var(--c-cutloss); }
+
+.urgent { margin: 14px 0; padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-soft); }
+.urgent-head { font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.urgent-count { background: var(--c-relist); color: #1a1205; border-radius: 999px; padding: 1px 9px; font-size: 12px; }
+.urgent-buckets { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.urgent-bucket { padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); border-left: 3px solid var(--c-unknown); }
+.urgent-bucket.u-undercut { border-left-color: var(--c-cutloss); }
+.urgent-bucket.u-cut_loss { border-left-color: var(--c-cutloss); }
+.urgent-bucket.u-needs_relist { border-left-color: var(--c-relist); }
+.urgent-bucket.u-profit_low { border-left-color: var(--c-profitlow); }
+.urgent-bucket.u-likely_stale { border-left-color: var(--c-unknown); }
+.urgent-bucket.u-incomparable { border-left-color: var(--c-incomparable); }
+.ub-title { font-size: 12px; text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px; }
+.ub-title b { color: var(--text); }
+.urgent-bucket ul { margin: 0; padding-left: 0; list-style: none; }
+.urgent-bucket li { font-size: 12.5px; padding: 2px 0; display: flex; justify-content: space-between; gap: 8px; }
+.urgent-bucket li a { color: var(--text); text-decoration: none; }
+.urgent-bucket li a:hover { color: var(--accent); }
+.ub-note { color: var(--text-faint); }

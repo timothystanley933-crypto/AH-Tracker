@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from . import profit
 from .config import settings
 from .formatting import format_coins, format_profit
 
@@ -159,14 +160,27 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
             market_context = json.loads(_row_get(analysis_row, "market_context_json") or "{}")
         except (ValueError, TypeError):
             market_context = {}
+        try:
+            decision_support = json.loads(_row_get(analysis_row, "decision_support_json") or "{}")
+        except (ValueError, TypeError):
+            decision_support = {}
         volume_per_day = analysis_row["volume_per_day"]
     else:
         market_context = {}
+        decision_support = {}
 
     expected_profit = analysis_row["expected_profit"] if analysis_row else None
     suggested_price = analysis_row["suggested_price"] if analysis_row else None
     confidence = analysis_row["confidence"] if analysis_row else None
     comparable_count = analysis_row["comparable_count"] if analysis_row else 0
+
+    # Fee-aware profit (computed live from the current ledger on the row).
+    profit_current = profit.profit_if_current_sells(row)
+    profit_relist = profit.profit_after_relist(row, suggested_price)
+    relist_count = _row_get(row, "relist_count", 0) or 0
+    listing_fees_paid = _row_get(row, "accumulated_listing_fees", 0) or 0
+    manual_extra_costs = _row_get(row, "manual_extra_costs", 0) or 0
+    next_relist_fee = profit.listing_fee(suggested_price or row["listing_price"])
 
     return {
         "uuid": row["auction_uuid"],
@@ -207,6 +221,20 @@ def build_card(row: sqlite3.Row, analysis_row: Optional[sqlite3.Row]) -> Dict[st
         "sell_like_suggested": sell_estimate.get("sale_likelihood_suggested", "unknown"),
         "sell_reason": sell_estimate.get("sell_time_reason", ""),
         "has_sell_estimate": bool(sell_estimate) and sell_estimate.get("estimated_sell_time_current") not in (None, "Unknown"),
+        # Fee-aware profit + relist ledger.
+        "profit_current": profit_current,
+        "profit_current_fmt": format_profit(profit_current) if profit_current is not None else "—",
+        "profit_relist": profit_relist,
+        "profit_relist_fmt": format_profit(profit_relist) if profit_relist is not None else "—",
+        "relist_count": relist_count,
+        "listing_fees_paid": listing_fees_paid,
+        "listing_fees_paid_fmt": format_coins(listing_fees_paid),
+        "manual_extra_costs": manual_extra_costs,
+        "manual_extra_costs_fmt": format_coins(manual_extra_costs),
+        "next_relist_fee_fmt": format_coins(next_relist_fee),
+        "sales_tax_pct": round(settings.ah_sales_tax_rate * 100, 4),
+        "listing_fee_pct": round(settings.ah_listing_fee_rate * 100, 4),
+        "decision_support": decision_support,
         "market_context": market_context,
         "raw_lbin_fmt": format_coins(market_context.get("raw_same_tag_lbin")) if market_context else "—",
         "raw_top_prices_fmt": [
@@ -268,6 +296,47 @@ def compute_summary(cards: List[Dict[str, Any]], last_refresh: Optional[str]) ->
         "undercuts": len(undercuts),
         "possible_undercuts": len(possible_undercuts),
         "last_refresh": _ago(last_refresh) if last_refresh else "never",
+    }
+
+
+# Urgency buckets, most urgent first. Each card is placed in its single
+# highest-priority matching bucket. Undercut and cut-loss rank above all else.
+_URGENCY = (
+    ("undercut", "Undercut", lambda c: bool(c.get("undercut"))),
+    ("cut_loss", "Cut loss", lambda c: c["decision"] == "CUT_LOSS"),
+    ("needs_relist", "Needs relist", lambda c: c["decision"] == "RELIST"),
+    ("profit_low", "Profit too low", lambda c: c["decision"] == "PROFIT_LOW"),
+    ("likely_stale", "Likely stale", lambda c: c["status"] == "STALE"),
+    ("incomparable", "Incomparable / needs manual check", lambda c: c["decision"] == "INCOMPARABLE"),
+)
+
+
+def build_urgent_actions(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Group actionable cards into urgency buckets and a single sorted list.
+
+    Undercut and cut-loss are prioritised above relist / profit-low / stale /
+    incomparable. Ignored items and sold/expired items are excluded (STALE is
+    kept so the user is nudged to clean it up).
+    """
+    buckets: Dict[str, Dict[str, Any]] = {
+        key: {"label": label, "cards": []} for key, label, _ in _URGENCY
+    }
+    ranked: List[tuple] = []
+    for c in cards:
+        if c.get("ignored"):
+            continue
+        if c["status"] not in ("ACTIVE", "STALE"):
+            continue
+        for rank, (key, _label, pred) in enumerate(_URGENCY):
+            if pred(c):
+                buckets[key]["cards"].append(c)
+                ranked.append((rank, -(c.get("listing_price") or 0), c))
+                break
+    ranked.sort(key=lambda t: (t[0], t[1]))
+    return {
+        "buckets": buckets,
+        "items": [c for _, __, c in ranked],
+        "count": len(ranked),
     }
 
 

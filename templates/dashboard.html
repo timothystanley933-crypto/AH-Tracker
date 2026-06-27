@@ -30,6 +30,31 @@
         <div class="stat"><div class="label">Last refresh</div><div class="value" style="font-size:15px">{{ summary.last_refresh }}</div></div>
     </div>
 
+    <!-- Urgent actions -->
+    {% if urgent and urgent.count %}
+    <div class="urgent">
+        <div class="urgent-head">⚡ Urgent actions <span class="urgent-count">{{ urgent.count }}</span></div>
+        <div class="urgent-buckets">
+            {% for key, bucket in urgent.buckets.items() %}
+            {% if bucket.cards %}
+            <div class="urgent-bucket u-{{ key }}">
+                <div class="ub-title">{{ bucket.label }} <b>{{ bucket.cards|length }}</b></div>
+                <ul>
+                    {% for c in bucket.cards[:6] %}
+                    <li>
+                        <a href="/auction/{{ c.uuid }}">{{ c.item_name }}</a>
+                        {% if key == 'undercut' and c.undercut %}<span class="ub-note">-{{ c.undercut.gap_coins_fmt }} (-{{ c.undercut.gap_percent }}%)</span>
+                        {% elif c.profit_relist is not none %}<span class="ub-note">relist {{ c.profit_relist_fmt }}</span>{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Controls -->
     <div class="controls">
         <div class="chips">

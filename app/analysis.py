@@ -14,9 +14,9 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import cofl_client, db
+from . import cofl_client, db, decision_support, profit
 from .config import settings
-from .features import extract_item_features
+from .features import build_item_identity_key, extract_item_features
 from .formatting import format_coins, format_profit, round_clean_price
 from .scoring import score_comparable
 
@@ -49,6 +49,7 @@ class AnalysisResult:
     volume_per_day: Optional[float]
     sell_estimate: Dict[str, Any] = field(default_factory=dict)
     market_context: Dict[str, Any] = field(default_factory=dict)
+    decision_support: Dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -259,6 +260,12 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
     if not base_features.get("item_tag"):
         base_features["item_tag"] = item_tag
 
+    # Record a stable cross-relist identity for this item (best effort).
+    try:
+        db.set_item_identity_key(uuid, build_item_identity_key(base_features))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("identity key update failed for %s: %s", uuid, exc)
+
     reasons: List[str] = []
 
     # 2. Comparable BIN listings.
@@ -315,7 +322,9 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
         week_hist = await cofl_client.get_price_history(item_tag, "week")
         trend, volume_per_day = compute_trend(day_hist, week_hist)
 
-    # 4. Decide.
+    # 4. Decide (fee-aware: accumulated listing fees + the new relist fee count).
+    accumulated_fees = int(row["accumulated_listing_fees"] or 0) if "accumulated_listing_fees" in row.keys() else 0
+    manual_extra = int(row["manual_extra_costs"] or 0) if "manual_extra_costs" in row.keys() else 0
     decision, suggested_price, expected_profit, decision_reasons = _decide(
         base_features=base_features,
         listing_price=listing_price,
@@ -325,6 +334,9 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
         confidence=confidence,
         trend=trend,
         volume_per_day=volume_per_day,
+        accumulated_listing_fees=accumulated_fees,
+        manual_extra_costs=manual_extra,
+        new_relist_fee_rate=settings.ah_listing_fee_rate,
     )
     reasons.extend(decision_reasons)
 
@@ -350,6 +362,19 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
         week_history=week_hist,
     )
 
+    decision_support = build_decision_support(
+        row=row,
+        decision=decision,
+        listing_price=listing_price,
+        suggested_price=suggested_price,
+        comparables=comparables,
+        candidates_raw=candidates_raw,
+        base_features=base_features,
+        confidence=confidence,
+        trend=trend,
+        volume_per_day=volume_per_day,
+    )
+
     result = AnalysisResult(
         decision=decision,
         suggested_price=suggested_price,
@@ -364,10 +389,76 @@ async def analyse_auction(uuid: str) -> Optional[AnalysisResult]:
         volume_per_day=volume_per_day,
         sell_estimate=sell_estimate,
         market_context=market_context,
+        decision_support=decision_support,
     )
 
     _persist(uuid, result)
     return result
+
+
+def build_decision_support(
+    *,
+    row,
+    decision: str,
+    listing_price: int,
+    suggested_price: Optional[int],
+    comparables: List[Comparable],
+    candidates_raw: List[Dict[str, Any]],
+    base_features: Dict[str, Any],
+    confidence: int,
+    trend: Dict[str, Any],
+    volume_per_day: Optional[float],
+) -> Dict[str, Any]:
+    """Assemble price rank, undercut, walls, scores, options and trend label.
+
+    Safe-comparable data when the decision is trustworthy; raw same-tag data
+    (clearly labelled) when it is INCOMPARABLE/UNKNOWN so the user still gets
+    context without us pretending raw LBIN is a safe price.
+    """
+    comp_prices = sorted(c.price for c in comparables if c.price)
+    raw_prices = sorted(
+        p for p in (_price_from_listing(item) for item in candidates_raw) if p
+    )
+    safe = decision not in ("INCOMPARABLE", "UNKNOWN") and len(comp_prices) >= settings.relist_min_comparable_matches
+
+    rank_prices = comp_prices if safe else raw_prices
+    rank, total = decision_support.price_rank(listing_price, rank_prices)
+    cheapest = rank_prices[0] if rank_prices else None
+    gap_coins, gap_percent = decision_support.undercut_amount(listing_price, cheapest)
+    walls = decision_support.detect_price_walls(raw_prices)
+
+    cheaper_count = sum(1 for p in rank_prices if p < (listing_price or 0))
+    liquidity = decision_support.liquidity_score(volume_per_day, len(comparables))
+    demand = decision_support.demand_score(volume_per_day, trend)
+    competition = decision_support.competition_score(cheaper_count, len(raw_prices), walls)
+
+    options = profit.build_relist_options(row, comp_prices[0] if (safe and comp_prices) else None)
+
+    return {
+        "rank_basis": "safe comparable" if safe else "raw same-tag",
+        "price_rank": rank,
+        "price_rank_total": total,
+        "cheapest_similar": cheapest,
+        "undercut_coins": gap_coins,
+        "undercut_percent": gap_percent,
+        "price_walls": walls,
+        "scores": {"liquidity": liquidity, "demand": demand, "competition": competition},
+        "trend_label": decision_support.trend_label(trend),
+        "confidence_notes": decision_support.confidence_explanation(
+            comparable_count=len(comparables),
+            features=base_features,
+            volume_per_day=volume_per_day,
+            trend=trend,
+        ),
+        "relist_options": options,
+        "profit_current": profit.profit_if_current_sells(row),
+        "profit_after_relist": profit.profit_after_relist(row, suggested_price),
+        "breakdown_current": profit.profit_breakdown(row, listing_price, include_new_relist_fee=False),
+        "breakdown_relist": (
+            profit.profit_breakdown(row, suggested_price, include_new_relist_fee=True)
+            if suggested_price else None
+        ),
+    }
 
 
 def _fmt(value) -> str:
@@ -499,11 +590,33 @@ def _decide(
     confidence: int,
     trend: Dict[str, Any],
     volume_per_day: Optional[float],
+    accumulated_listing_fees: int = 0,
+    manual_extra_costs: int = 0,
+    new_relist_fee_rate: Optional[float] = None,
 ) -> tuple[str, Optional[int], Optional[int], List[str]]:
     reasons: List[str] = []
     cheapest = comparables[0].price if comparables else None
     min_matches = settings.relist_min_comparable_matches
     score_threshold = settings.relist_min_comparable_score
+
+    def _net(price: int) -> int:
+        """Fee-aware net profit when relisting at ``price``.
+
+        Deducts sales tax, all listing fees already paid, the new relist fee
+        (when a rate is supplied), and manual extra costs. With the defaults
+        (no fees) this equals the simple after-tax profit.
+        """
+        new_fee = int(round(price * new_relist_fee_rate)) if new_relist_fee_rate else 0
+        return int(
+            round(
+                price
+                - price * settings.ah_sales_tax_rate
+                - (buy_cost or 0)
+                - accumulated_listing_fees
+                - manual_extra_costs
+                - new_fee
+            )
+        )
 
     # No buy cost: we can still report comparability but not profit.
     if buy_cost is None:
@@ -528,8 +641,8 @@ def _decide(
     )
     suggested = round_clean_price(max(0, cheapest - undercut))
 
-    profit_at_suggested = profit_after_tax(suggested, buy_cost)
-    profit_at_cheapest = profit_after_tax(cheapest, buy_cost)
+    profit_at_suggested = _net(suggested)
+    profit_at_cheapest = _net(cheapest)
 
     price_gap = listing_price - suggested
     price_gap_percent = (price_gap / suggested * 100.0) if suggested > 0 else 0.0
@@ -637,6 +750,7 @@ def _persist(uuid: str, result: AnalysisResult) -> None:
                 "volume_per_day": result.volume_per_day,
                 "sell_estimate_json": json.dumps(result.sell_estimate),
                 "market_context_json": json.dumps(result.market_context),
+                "decision_support_json": json.dumps(result.decision_support, default=str),
             }
         )
     except Exception as exc:  # noqa: BLE001

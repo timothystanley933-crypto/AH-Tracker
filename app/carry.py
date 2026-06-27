@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from . import analysis, cofl_client, db
 from .config import settings
-from .features import extract_item_features
+from .features import build_item_identity_key, extract_item_features
 from .formatting import format_coins
 from .scoring import score_comparable
 
@@ -294,6 +294,19 @@ async def carry(new_uuid: str, old_uuid: str) -> Dict[str, Any]:
     if not ok:
         return {"ok": False, "error": "could not copy user fields"}
     db.accept_carry_suggestion(new_uuid, old_uuid)
+
+    # This new auction IS a relist: record the RELIST fee and carry the previous
+    # listing's accumulated fees across. Deduped, so a re-accept / reload is a
+    # no-op (no double counting, no extra relist_count).
+    try:
+        new_features = await _features_for(new_uuid, row)
+        db.record_relist_fee(
+            new_uuid, old_uuid, row["listing_price"],
+            build_item_identity_key(new_features),
+        )
+    except Exception as exc:  # noqa: BLE001 - fee ledger must not block the carry
+        log.warning("relist fee recording failed for %s: %s", new_uuid, exc)
+
     try:
         await analysis.analyse_auction(new_uuid)
     except Exception as exc:  # noqa: BLE001
